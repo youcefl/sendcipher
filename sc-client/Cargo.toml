@@ -1,0 +1,17 @@
+# Creation date: 2025.09.29
+# Copyright Youcef Lemsafer
+# MIT License
+
+[package]
+name = "sc-client"
+version = "0.0.1"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wasm-bindgen = "0.2"
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false  # Deactivated for fast tests
