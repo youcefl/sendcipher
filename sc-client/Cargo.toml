@@ -11,6 +11,7 @@ edition = "2024"
 crate-type = ["cdylib"]
 
 [dependencies]
+byteorder = "1.5.0"
 anyhow = "1.0"
 wasm-bindgen = "0.2"
 aes-gcm = "0.10"
