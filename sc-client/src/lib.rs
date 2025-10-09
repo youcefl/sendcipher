@@ -7,7 +7,6 @@
 use std::io::Cursor;
 use byteorder::{ReadBytesExt, LittleEndian};
 use rand::RngCore;
-use sc_shared::{FileHeader, Metadata, FileType};
 use web_sys::window;
 use anyhow::Result;
 use aes_gcm::{
@@ -15,26 +14,22 @@ use aes_gcm::{
     Aes256Gcm, Nonce
 };
 use wasm_bindgen::prelude::*;
-use pbkdf2::pbkdf2;
-use hmac::Hmac;
-use sha2::Sha256;
+use argon2::{
+    Argon2
+};
+mod fileheader;
+use fileheader::*;
+
 
 #[wasm_bindgen]
 pub fn encrypt_file(file_name: &str, data: &[u8], password: &str)
          -> Result<Vec<u8>, JsValue> {
     println!("Encrypting {} bytes", data.len());
-    let mut file_header = FileHeader{
-        magic: *b"SDCR",
-        version: 1,
-        kdf_algo_id: 1,
-        kdf_param: 1,
-        salt_length: 32,
-        salt: Vec::<u8>::from([0, 32]),
-        init_vector_length: 12,
-        init_vector: Vec::<u8>::from([0, 12]),
-        cipher_algorithm: 1,
-        cipher_length: 0
-    };
+    let mut file_header = FileHeader::new();
+    file_header.magic = *b"SDCR";
+    file_header.version = 1;
+    file_header.kdf_algorithm = KdfAlgorithm::Argon2id;
+    file_header.cipher_algorithm = CipherAlgorithm::Aes256Gcm;
 
     let encrypted_data = do_encrypt_file(file_name,
         data,
@@ -55,20 +50,35 @@ pub fn encrypt_file(file_name: &str, data: &[u8], password: &str)
 
 fn get_rand_bytes(length: usize) -> Result<Vec<u8>, JsValue> {
     let mut buf = vec![0u8; length];
-    
+
     if let Some(win) = window() {
         let crypto = win.crypto().map_err(|_| JsValue::from_str("No crypto available"))?;
         crypto.get_random_values_with_u8_array(&mut buf)?;
     } else {
         return Err(JsValue::from_str("No window object available"));
     }
-    
+
     Ok(buf)
 }
 
-fn derive_key(password: &str, salt: &[u8]) -> Result<[u8; 32]> {
+fn derive_key(password: &str, params: &Argon2idParams) -> Result<[u8; 32]> {
+    let argon2_params = argon2::Params::new(
+        params.m_cost, // 15MB memory
+        params.t_cost, // iterations
+        params.p_cost, // parallelism
+        Some(params.salt.len())
+    ).map_err(|e| anyhow::anyhow!("Argon2 params error: {:?}", e))?;
+
+    let argon2_inst = Argon2::new(
+        argon2::Algorithm::Argon2id,
+        argon2::Version::V0x13,
+        argon2_params,
+    );
+
     let mut key = [0u8; 32];
-    pbkdf2::<Hmac<Sha256>>(password.as_bytes(), salt, 100_000, &mut key)?;
+    argon2_inst.hash_password_into(password.as_bytes(), &params.salt, &mut key)
+        .map_err(|e| anyhow::anyhow!("Argon2 hashing error: {:?}", e))?;
+
     Ok(key)
 }
 
@@ -91,13 +101,25 @@ fn add_padding(data: &[u8]) -> (Vec<u8>, u32) {
 fn do_encrypt_file(file_name: &str, data: &[u8], password: &str, file_header: &mut FileHeader)
             -> Result<Vec<u8>, JsValue> {
 
-    file_header.salt_length = 32;
-    file_header.salt = get_rand_bytes(file_header.salt_length.try_into().unwrap())?;
-    file_header.init_vector_length = 12;
-    file_header.init_vector = get_rand_bytes(file_header.init_vector_length.try_into().unwrap())?;
+    let argon2id_params = Argon2idParams {
+        m_cost: 19 * 1024, // 19MB memory
+        t_cost: 2, // iterations
+        p_cost: 1, // parallelism
+        salt: get_rand_bytes(32)?
+    };
+    file_header.kdf_raw_params = argon2id_params.to_bytes()
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+    file_header.kdf_param_length = file_header.kdf_raw_params.len() as u32;
+    let key = derive_key(password, &argon2id_params)
+                            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+    let aes256gcm_params = Aes256GcmParams {
+        nonce: get_rand_bytes(12)?
+    };
+    file_header.cipher_raw_params = aes256gcm_params.to_bytes()
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+    file_header.cipher_param_length = file_header.cipher_raw_params.len() as u32;
 
-    let key = derive_key(password, &file_header.salt).map_err(|e| JsValue::from_str(&e.to_string()))?;
-    let nonce = Nonce::from_slice(&file_header.init_vector);
+    let nonce = Nonce::from_slice(&aes256gcm_params.nonce);
 
     let (padded_data, padding_size) = add_padding(data);
     let meta_data = Metadata{
@@ -152,11 +174,15 @@ pub fn decrypt_file(data: &[u8], password: &str)
     let (file_header, remaining_data) = FileHeader::parse(data)
                 .map_err(|e| JsValue::from_str(&e.to_string()))?;
     //@todo: we need some checks here (magic, version, etc.)
+    let argon2id_params = Argon2idParams::from_bytes(&file_header.kdf_raw_params)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
     // Key derivation, nonce, etc... leading to decryption.
-    let key = derive_key(password, &file_header.salt)
+    let key = derive_key(password, &argon2id_params)
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
     let cipher = Aes256Gcm::new(&key.into());
-    let nonce = Nonce::from_slice(&file_header.init_vector);
+    let cipher_params = Aes256GcmParams::from_bytes(&file_header.cipher_raw_params)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+    let nonce = Nonce::from_slice(&cipher_params.nonce);
     let decrypted_data = cipher.decrypt(nonce, remaining_data)
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
     // decrypted_data is expected to look like this:
@@ -165,7 +191,7 @@ pub fn decrypt_file(data: &[u8], password: &str)
     // metadata
     // data
     // padding
-    let map_err_js = |e| JsValue::from_str(&format!("IO error: {}", e));    
+    let map_err_js = |e| JsValue::from_str(&format!("IO error: {}", e));
     let mut cursor = Cursor::new(&decrypted_data);
     let metadata_version = cursor.read_u16::<LittleEndian>().map_err(map_err_js)?;
     let metadata_length = cursor.read_u32::<LittleEndian>().map_err(map_err_js)?;
