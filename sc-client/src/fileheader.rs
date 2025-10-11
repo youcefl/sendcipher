@@ -1,5 +1,7 @@
 /*
 * Created on 2025.09.29
+* Author: Youcef Lemsafer
+* Copyright Youcef Lemsafer, all rights reserved.
 */
 
 //use std::fs::File;

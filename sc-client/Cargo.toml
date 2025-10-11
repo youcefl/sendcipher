@@ -1,6 +1,5 @@
 # Creation date: 2025.09.29
-# Copyright Youcef Lemsafer
-# MIT License
+# Copyright Youcef Lemsafer, all rights reserved.
 
 [package]
 name = "sc-client"

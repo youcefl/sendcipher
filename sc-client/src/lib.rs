@@ -1,7 +1,6 @@
 /*
 * Created on 2025.09.29
-* Author: Youcef Lemsafer
-* Copyright PrimeScape
+* Copyright Youcef Lemsafer, all rights reserved.
 */
 
 use std::io::Cursor;
@@ -63,7 +62,7 @@ fn get_rand_bytes(length: usize) -> Result<Vec<u8>, JsValue> {
 
 fn derive_key(password: &str, params: &Argon2idParams) -> Result<[u8; 32]> {
     let argon2_params = argon2::Params::new(
-        params.m_cost, // 15MB memory
+        params.m_cost, // memory
         params.t_cost, // iterations
         params.p_cost, // parallelism
         Some(params.salt.len())
@@ -102,8 +101,8 @@ fn do_encrypt_file(file_name: &str, data: &[u8], password: &str, file_header: &m
             -> Result<Vec<u8>, JsValue> {
 
     let argon2id_params = Argon2idParams {
-        m_cost: 19 * 1024, // 19MB memory
-        t_cost: 2, // iterations
+        m_cost: 50 * 1024, // 19MB memory
+        t_cost: 3, // iterations
         p_cost: 1, // parallelism
         salt: get_rand_bytes(32)?
     };
