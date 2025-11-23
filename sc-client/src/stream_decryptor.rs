@@ -104,10 +104,8 @@ impl StreamDecryptor {
 #[cfg(test)]
 mod tests {
 
-    use bincode::de;
-
     use super::*;
-    use crate::{lcg::*, stream_encryptor::StreamEncryptor};
+    use crate::{chunking::*, lcg::*, stream_encryptor::StreamEncryptor, test_utils::*};
 
     mod utils {
         use super::*;
@@ -127,20 +125,31 @@ mod tests {
             }
             buffer
         }
+
     }
 
     #[test]
     /// Basic encryption/decryption test focusing on the manifest
     fn test_decrypt_manifest() {
-        let mut encryptor = StreamEncryptor::with_rand_chunks_seed(
-            "whatever_file_name.txt",
-            "password",
+        /*    let _ = env_logger::builder()
+                .filter_level(log::LevelFilter::Debug)
+                .is_test(true)
+                .try_init();
+        */
+        log::debug!("Test test_decrypt_manifest starts");
+        let chunk_generator = RandomChunkGenerator::with_seed(
             20 * 1024 * 1024,
             5 * 1024 * 1024,
             10 * 1024 * 1024,
             1u128,
-        )
-        .unwrap();
+        );
+        let mut encryptor = StreamEncryptor::new("whatever_file_name.txt", chunk_generator, |k| {
+            Ok(AnyKeyWrapper::Argon2id(
+                Argon2idKeyWrapper::new("password", &create_argon2id_params_for_tests(), k)?,
+            ))
+        })
+        .expect("Encryptor creation should succeed");
+
         let mut lcg = Lcg::new(LCG_PARAMS[0].0, LCG_PARAMS[0].1);
         let file_contents = utils::create_file_contents(10, &mut lcg);
         let mut chunks = Vec::new();

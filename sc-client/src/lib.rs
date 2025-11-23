@@ -12,4 +12,5 @@ pub mod wasm_file_encryptor;
 pub mod wasm_file_decryptor;
 #[cfg(test)]
 mod stream_cypher_tests;
-
+#[cfg(test)]
+mod test_utils;

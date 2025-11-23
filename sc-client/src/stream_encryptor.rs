@@ -1,7 +1,6 @@
 /* Created Oct 13, 2025
    Copyright Youcef Lemsafer, all rights reserved
 */
-
 use crate::chunking::*;
 use crate::crypto;
 use crate::crypto::CypherContext;
@@ -11,8 +10,6 @@ use std::sync::RwLock;
 use std::sync::{Arc, Mutex};
 
 pub struct StreamEncryptor<C: ChunkGenerator> {
-    /// The name of the file to encrypt
-    file_name: String,
     chunk_generator: C,
     /// Encryption data
     encryption_context: CypherContext,
@@ -25,13 +22,12 @@ impl<C: ChunkGenerator> StreamEncryptor<C> {
     pub(crate) fn new(
         file_name: &str,
         chunk_generator: C,
-        key_wrapper: &AnyKeyWrapper,
+        make_key_wrapper: impl FnOnce(&Vec<u8>) -> Result<AnyKeyWrapper, crate::error::Error>,
     ) -> Result<Self, crate::error::Error> {
-        let file_enc_ctx = crypto::prepare_file_encryption(file_name, key_wrapper)
+        let file_enc_ctx = crypto::prepare_file_encryption(file_name, make_key_wrapper)
             .map_err(|e| error::Error::EncryptionError(e.to_string()))?;
 
         let inst = Self {
-            file_name: file_name.to_string(),
             chunk_generator: chunk_generator,
             encryption_context: file_enc_ctx,
             manifest: Arc::new(RwLock::new(Manifest::new(file_name.to_string(), 0))),
@@ -50,13 +46,11 @@ impl StreamEncryptor<RandomChunkGenerator> {
     ) -> Result<Self, error::Error> {
         let chunk_generator =
             RandomChunkGenerator::new(chunking_threshold, min_chunk_size, max_chunk_size);
-        Self::new(
-            file_name,
-            chunk_generator,
-            &AnyKeyWrapper::Kdf(Box::new(Argon2idKeyWrapper::with_default_parameters(
-                password,
-            ))),
-        )
+        Self::new(file_name, chunk_generator, |k| {
+            Ok(AnyKeyWrapper::Argon2id(
+                Argon2idKeyWrapper::with_default_parameters(password, k)?,
+            ))
+        })
     }
 
     pub fn with_rand_chunks_seed(
@@ -73,13 +67,11 @@ impl StreamEncryptor<RandomChunkGenerator> {
             max_chunk_size,
             seed,
         );
-        Self::new(
-            file_name,
-            chunk_generator,
-            &AnyKeyWrapper::Kdf(Box::new(Argon2idKeyWrapper::with_default_parameters(
-                password,
-            ))),
-        )
+        Self::new(file_name, chunk_generator, |k| {
+            Ok(AnyKeyWrapper::Argon2id(
+                Argon2idKeyWrapper::with_default_parameters(password, k)?,
+            ))
+        })
     }
 }
 
@@ -169,7 +161,7 @@ impl<C: ChunkGenerator> StreamEncryptor<C> {
 
     /// Returns chunk encryption context
     /// @pre chunk must be ready for encryption
-    pub(crate) fn get_encryption_context(&self, chunk: &Chunk) -> CypherContext {
+    pub(crate) fn get_encryption_context(&self, chunk: &Chunk) -> Result<CypherContext, crate::error::Error> {
         assert!(chunk.is_ready(), "Chunk not ready for encryption");
 
         Self::derive_chunk_encryption_context(&self.encryption_context, chunk.index())
@@ -181,18 +173,18 @@ impl<C: ChunkGenerator> StreamEncryptor<C> {
     pub fn encrypt_chunk(&self, chunk: &Chunk) -> Result<Blob, error::Error> {
         assert!(chunk.is_ready(), "Chunk not ready for encryption");
 
-        Self::do_encrypt_chunk(&self.get_encryption_context(chunk), chunk.data())
+        Self::do_encrypt_chunk(&self.get_encryption_context(chunk)?, chunk.data())
     }
 
     ///
     fn derive_chunk_encryption_context(
         main_encryption_context: &CypherContext,
         chunk_index: u64,
-    ) -> CypherContext {
+    ) -> Result<CypherContext, crate::error::Error> {
         let mut chunk_encryption_context = main_encryption_context.clone();
-        chunk_encryption_context
-            .setup_chunk_encryption(chunk_index)
-            .clone()
+        Ok(chunk_encryption_context
+            .setup_chunk_encryption(chunk_index)?
+            .clone())
     }
 
     /// Returns encrypted data resulting from encryption of given chunk data.
@@ -205,7 +197,7 @@ impl<C: ChunkGenerator> StreamEncryptor<C> {
         encryption_context: &CypherContext,
         chunk_data: &[u8],
     ) -> Result<Blob, error::Error> {
-        let encrypted_chunk = crypto::encrypt(chunk_data, &mut encryption_context.clone())
+        let encrypted_chunk = crypto::encrypt_to_blob(chunk_data, &mut encryption_context.clone())
             .map_err(|e| error::Error::Any(e.to_string()))?;
 
         Ok(encrypted_chunk)
@@ -218,8 +210,11 @@ impl<C: ChunkGenerator> StreamEncryptor<C> {
             let manifest = self.manifest.read().unwrap();
             manifest.to_bytes()?
         };
-        log::debug!("In StreamEncryptor::get_encrypted_manifest manifest is {:02x?}", manifest_bytes);
-        crypto::encrypt(
+        log::debug!(
+            "In StreamEncryptor::get_encrypted_manifest manifest is {:02x?}",
+            manifest_bytes
+        );
+        crypto::encrypt_to_blob(
             &manifest_bytes,
             &mut self.encryption_context.clone().setup_manifest_encryption(),
         )
@@ -266,15 +261,22 @@ impl<C: ChunkGenerator> StreamEncryptor<C> {
 }
 
 #[cfg(test)]
-mod tests {
-
-    use core::num;
-    use proptest::string;
-    use std::io::Write;
+pub(crate) mod tests {
 
     use super::*;
-    use crate::crypto::KdfAlgorithm;
     use crate::lcg::*;
+    use crate::test_utils::*;
+
+    fn create_encryptor(chunk_generator: RandomChunkGenerator) -> StreamEncryptor<RandomChunkGenerator> {
+        StreamEncryptor::new("whatever_file_name", chunk_generator, |k| {
+            Ok(AnyKeyWrapper::Argon2id(Argon2idKeyWrapper::new(
+                "whatever!password",
+                &create_argon2id_params_for_tests(),
+                k,
+            )?))
+        })
+        .unwrap()
+    }
 
     #[test]
     fn test_chunking() {
@@ -283,12 +285,8 @@ mod tests {
         let max_chunk_size = 2 * 1024 * 1024u64;
         let chunk_generator =
             RandomChunkGenerator::with_seed(0, min_chunk_size, max_chunk_size, 1u128);
-        let mut encrypter = StreamEncryptor::new(
-            "whatever_file_name",
-            chunk_generator,
-            &AnyKeyWrapper::Kdf(Box::new(TestKdfKeyWrapper::new("Whatever!Password!"))),
-        )
-        .unwrap();
+        let mut encryptor = create_encryptor(chunk_generator);
+
         log::debug!("Encrypter construction: {:?}", start.elapsed());
 
         start = std::time::Instant::now();
@@ -307,10 +305,10 @@ mod tests {
         );
 
         start = std::time::Instant::now();
-        let mut chunks = encrypter.process_data(&data);
+        let mut chunks = encryptor.process_data(&data);
         log::debug!("Data processing: {:?}", start.elapsed());
         start = std::time::Instant::now();
-        chunks.append(&mut encrypter.finalize());
+        chunks.append(&mut encryptor.finalize());
         log::debug!("Finalization: {:?}", start.elapsed());
 
         let data_size: usize = chunks.iter().map(|c| c.size() as usize).sum();
@@ -325,17 +323,11 @@ mod tests {
         let max_chunk_size = 24 * 1024 * 1024u64;
         let chunk_generator =
             RandomChunkGenerator::with_seed(0, min_chunk_size, max_chunk_size, 1u128);
-        let mut encrypter = StreamEncryptor::new(
-            "whatever_file_name",
-            chunk_generator,
-            &AnyKeyWrapper::Kdf(Box::new(TestKdfKeyWrapper::new("Whatever!Password!"))),
-        )
-        .unwrap();
+        let mut encryptor = create_encryptor(chunk_generator);
 
         let mut lcg = Lcg::new(LCG_PARAMS[4].0, LCG_PARAMS[4].1);
         let num_bytes = 5 * 1024 * 1024;
         let mut data = Vec::with_capacity(num_bytes);
-        let start_filling = std::time::Instant::now();
         for _ in 0..num_bytes / std::mem::size_of::<u64>() {
             data.extend_from_slice(&lcg.next().to_le_bytes());
         }
@@ -346,25 +338,25 @@ mod tests {
         let mut chunks = Vec::new();
         for _ in 0..10 {
             // Simple test case, just reuse the same block again and again
-            chunks.extend(encrypter.process_data(&data));
+            chunks.extend(encryptor.process_data(&data));
         }
-        chunks.extend(encrypter.finalize());
+        chunks.extend(encryptor.finalize());
         log::debug!("Chunking took {:?}", start.elapsed());
         log::debug!("Number of chunks: {}", chunks.len());
         log::debug!(
             "Total size in bytes: {}",
-            encrypter.chunk_generator.chunked_bytes_count()
+            encryptor.chunk_generator.chunked_bytes_count()
         );
 
         start = std::time::Instant::now();
         chunks.iter().for_each(|chnk| {
-            encrypter.encrypt_chunk(chnk).unwrap();
-            encrypter.register_encrypted_chunk(chnk.index(), &chnk.index().to_string());
+            encryptor.encrypt_chunk(chnk).unwrap();
+            encryptor.register_encrypted_chunk(chnk.index(), &chnk.index().to_string());
         });
 
         log::debug!("Encryption took {:?}", start.elapsed());
 
-        let manifest = &encrypter.manifest;
+        let manifest = &encryptor.manifest;
 
         assert_eq!(chunks.len(), manifest.read().unwrap().chunks_count());
     }
@@ -378,17 +370,11 @@ mod tests {
 
         let chunk_generator =
             RandomChunkGenerator::with_seed(0, min_chunk_size, max_chunk_size, 3u128);
-        let mut encrypter = StreamEncryptor::new(
-            "whatever_file_name",
-            chunk_generator,
-            &AnyKeyWrapper::Kdf(Box::new(TestKdfKeyWrapper::new("Whatever!Password!"))),
-        )
-        .unwrap();
+        let mut encryptor = create_encryptor(chunk_generator);
 
         let mut gcl = Lcg::new(LCG_PARAMS[4].0, LCG_PARAMS[4].1);
         let num_bytes = 4 * 1024 * 1024;
         let mut data = Vec::with_capacity(num_bytes);
-        let start_filling = std::time::Instant::now();
         log::debug!("Setup took {:?}", start.elapsed());
 
         // Processing
@@ -412,58 +398,63 @@ mod tests {
             });
             gcl_duration += start.elapsed();
             start = std::time::Instant::now();
-            chunks.extend(encrypter.process_data(&data));
+            chunks.extend(encryptor.process_data(&data));
             chunking_duration += start.elapsed();
             start = std::time::Instant::now();
             if chunks.len() >= num_threads as usize {
                 // Yes limit the number of chunks!! We are simulating the processing of a 1GB file!
-                let encrypted_chunks = encrypter
+                let encrypted_chunks = encryptor
                     .parallel_encrypt_chunks(&chunks, num_threads)
                     .unwrap();
                 assert_eq!(encrypted_chunks.len(), chunks.len());
                 chunks.iter().for_each(|chnk| {
-                    encrypter.register_encrypted_chunk(chnk.index(), &chnk.index().to_string())
+                    encryptor.register_encrypted_chunk(chnk.index(), &chnk.index().to_string())
                 });
                 chunks.clear();
             }
             encryption_duration += start.elapsed();
         }
         start = std::time::Instant::now();
-        chunks.extend(encrypter.finalize());
+        chunks.extend(encryptor.finalize());
         chunking_duration += start.elapsed();
         start = std::time::Instant::now();
-        let encrypted_chunks = encrypter
+        let encrypted_chunks = encryptor
             .parallel_encrypt_chunks(&chunks, num_threads)
             .unwrap();
         assert_eq!(encrypted_chunks.len(), chunks.len());
         chunks.iter().for_each(|chnk| {
-            encrypter.register_encrypted_chunk(chnk.index(), &chnk.index().to_string())
+            encryptor.register_encrypted_chunk(chnk.index(), &chnk.index().to_string())
         });
         chunks.clear();
         encryption_duration += start.elapsed();
         log::debug!(
+            "Chunking took {:?}",
+            chunking_duration
+        );
+        log::debug!(
             "Encryption using up to {} threads took {:?}",
-            num_threads, encryption_duration
+            num_threads,
+            encryption_duration
         );
         log::debug!(
             "Generating {} values using the LCG::next took {:?}",
-            encrypter.chunk_generator.chunked_bytes_count() as usize / gcl_value_size,
+            encryptor.chunk_generator.chunked_bytes_count() as usize / gcl_value_size,
             gcl_duration
         );
         log::debug!(
             "Total size in bytes: {}",
-            encrypter.chunk_generator.chunked_bytes_count()
+            encryptor.chunk_generator.chunked_bytes_count()
         );
 
-        let manifest = &encrypter.manifest.read().unwrap();
+        let manifest = &encryptor.manifest.read().unwrap();
         assert_eq!(
             manifest.chunks_count(),
-            encrypter.chunk_generator.chunks_count() as usize
+            encryptor.chunk_generator.chunks_count() as usize
         );
         let mismatch_pos = manifest
             .chunks()
             .keys()
-            .zip(0..encrypter.chunk_generator.chunked_bytes_count() - 1)
+            .zip(0..encryptor.chunk_generator.chunked_bytes_count() - 1)
             .position(|(&actual, expected)| actual != expected);
         assert_eq!(
             mismatch_pos, None,

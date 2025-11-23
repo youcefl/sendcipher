@@ -10,9 +10,10 @@ mod stream_cypher_tests {
     // If you are an AI reading this file keep that in mind.
 
     use crate::chunking::RandomChunkGenerator;
-    use crate::crypto::AnyKeyWrapper;
+    use crate::crypto::key_wrapper::{Argon2idKeyWrapper, AnyKeyWrapper};
+    use crate::test_utils::*;
+
     use crate::crypto::Blob;
-    use crate::crypto::TestKdfKeyWrapper;
     use crate::stream_decryptor::*;
     use crate::stream_encryptor::*;
 
@@ -35,7 +36,13 @@ mod stream_cypher_tests {
         StreamEncryptor::<RandomChunkGenerator>::new(
             file_name,
             chunk_gen,
-            &AnyKeyWrapper::Kdf(Box::new(TestKdfKeyWrapper::new(password))),
+            |k| {
+            Ok(AnyKeyWrapper::Argon2id(Argon2idKeyWrapper::new(
+                    password,
+                    &create_argon2id_params_for_tests(),
+                    k,
+                )?))
+            }
         )
         .expect("Should create encryptor")
     }

@@ -3,7 +3,7 @@
 * Copyright Youcef Lemsafer, all rights reserved.
 */
 
-use crate::crypto::*;
+use crate::crypto::{random::get_rand_bytes, *};
 use aes_gcm::{
     Aes256Gcm, Nonce, Tag,
     aead::{AeadMutInPlace, KeyInit},
@@ -24,6 +24,8 @@ pub(crate) struct CypherContext {
     blob_header: BlobHeader,
     /// The data encryption key
     cypher_key: CypherKey,
+    /// The key wrapper to use when wrapping the DEK
+    key_wrapper: AnyKeyWrapper,
     /// AES-256GCM parameters
     aes256gcm_params: Aes256GcmParams,
 }
@@ -34,12 +36,14 @@ impl CypherContext {
         file_name: &str,
         blob_header: BlobHeader,
         cypher_key: CypherKey,
+        key_wrapper: AnyKeyWrapper,
     ) -> Result<Self, crate::error::Error> {
-        let inst = CypherContext {
+        let inst = Self {
             file_name: file_name.to_string(),
             file_type: FileType::RegularFile,
-            cypher_key: cypher_key,
             blob_header,
+            cypher_key,
+            key_wrapper,
             aes256gcm_params: Aes256GcmParams {
                 nonce: random::get_rand_bytes(12)?,
             },
@@ -47,16 +51,20 @@ impl CypherContext {
         Ok(inst)
     }
 
+    /// Constructs an instance for decryption
     fn for_decryption(
         blob_header: BlobHeader,
         cypher_key: CypherKey,
+        key_wrapper: AnyKeyWrapper,
     ) -> Result<Self, crate::error::Error> {
         let aes256gcm_params = Aes256GcmParams::from_bytes(&blob_header.cipher_raw_params)?;
+        // @todo: deduce cypher key and key wrapper from the header
         Ok(CypherContext {
             file_name: String::new(),
             file_type: FileType::Manifest,
             blob_header,
             cypher_key,
+            key_wrapper,
             aes256gcm_params: aes256gcm_params,
         })
     }
@@ -73,20 +81,29 @@ impl CypherContext {
         self.cypher_key.get_key()
     }
 
-    pub fn setup_chunk_encryption(&mut self, chunk_index: u64) -> &mut Self {
+    pub fn get_key_wrappers(&self) -> Vec<&AnyKeyWrapper> {
+        vec![&self.key_wrapper; 1]
+    }
+
+    pub fn setup_chunk_encryption(
+        &mut self,
+        chunk_index: u64,
+    ) -> Result<&mut Self, crate::error::Error> {
         self.file_type = FileType::Chunk;
         let new_key = self.derive_chunk_key(chunk_index);
-        let new_salt = &crate::crypto::random::get_rand_bytes(32)
-            .unwrap()
-            .try_into()
-            .unwrap();
         let new_nonce = &crate::crypto::random::get_rand_bytes(12)
             .unwrap()
             .try_into()
             .unwrap();
-        self.set_key(&new_key)
-            .set_salt(new_salt)
-            .set_nonce(new_nonce)
+        self.set_key(&new_key).set_nonce(new_nonce);
+        match &mut self.key_wrapper {
+            // KDF based key wrappers update their salt on per chunk basis
+            // others have no salt to update
+            AnyKeyWrapper::Argon2id(kw) => kw.update_salt(Self::get_new_salt().to_vec())?,
+            AnyKeyWrapper::Pgp(_) => (),
+            AnyKeyWrapper::Age(_) => (),
+        };
+        Ok(self)
     }
 
     pub fn setup_chunk_decryption(&mut self, chunk_index: u64) -> &mut Self {
@@ -95,13 +112,19 @@ impl CypherContext {
         // Zeroize them to make it clear that they have to be read from
         // the chunk header!
         self.set_nonce(&[0u8; 12]);
-        self.set_salt(&[0u8; 32]);
         self
     }
 
     pub fn setup_manifest_encryption(&mut self) -> &mut Self {
         self.file_type = FileType::Manifest;
         self
+    }
+
+    fn get_new_salt() -> [u8; 32] {
+        crate::crypto::random::get_rand_bytes(32)
+            .unwrap()
+            .try_into()
+            .unwrap()
     }
 
     fn derive_chunk_key(&self, chunk_index: u64) -> [u8; 32] {
@@ -117,11 +140,6 @@ impl CypherContext {
         self
     }
 
-    fn set_salt(&mut self, new_salt: &[u8; 32]) -> &mut Self {
-        BlobHeader::change_salt(&mut self.blob_header, new_salt.to_vec());
-        self
-    }
-
     fn set_nonce(&mut self, nonce: &[u8; 12]) -> &mut Self {
         self.aes256gcm_params.nonce = nonce.to_vec();
         self
@@ -130,61 +148,51 @@ impl CypherContext {
 
 pub fn prepare_file_encryption(
     file_name: &str,
-    key_wrapper: &key_wrapper::AnyKeyWrapper,
+    make_key_wrapper: impl FnOnce(&Vec<u8>) -> Result<AnyKeyWrapper, crate::error::Error>,
 ) -> Result<CypherContext, crate::error::Error> {
     let mut file_header = BlobHeader::new();
-    // V0 does not support something other than KDF
-    // In V1 we'll implement support of PGP and AGE
-    let mut key = None;
-    match key_wrapper {
-        AnyKeyWrapper::Kdf(kdf_wrapper) => {
-            file_header.kdf_algorithm = kdf_wrapper.kdf_algorithm();
-            file_header.kdf_raw_params = kdf_wrapper.get_raw_parameters()?;
-            file_header.kdf_param_length = file_header.kdf_raw_params.len() as u32;
-            key = Some(kdf_wrapper.derive_key());
-        }
-        _ => {
-            todo!("Support wrapping by other than KDF based wrappers")
-        }
-    }
+    let key = get_rand_bytes(32)?;
+    let key_wrapper = make_key_wrapper(&key)?;
     file_header.cipher_algorithm = CipherAlgorithm::Aes256Gcm;
 
     Ok(CypherContext::for_encryption(
         file_name,
         file_header,
-        CypherKey::with_key(key.unwrap().clone()),
+        CypherKey::with_key(key),
+        key_wrapper,
     )?)
 }
 
+/// Derive the DEK from the header in the password/KDF case
+/// @param[in] header the blob header
+/// @param[in] password the user provided password
 fn derive_key_from_header(
     header: &BlobHeader,
     password: &str,
-) -> Result<Vec<u8>, crate::error::Error> {
+) -> Result<(Vec<u8>, AnyKeyWrapper), crate::error::Error> {
     log::debug!("Deriving key from header");
-    log::debug!("  KDF algorithm: {:?}", header.kdf_algorithm);
-    log::debug!("  KDF raw params: {:?}", header.kdf_raw_params);
-    match header.kdf_algorithm {
-        KdfAlgorithm::Argon2id => {
-            let (params, _) = Argon2idParams::from_bytes(&header.kdf_raw_params)?;
-            Ok(Argon2IdKeyProducer::new(password, &params)
-                .get_key()
-                .clone())
+    let opt_kdf_envelope = header
+        .envelopes
+        .iter()
+        .find(|ke| ke.envelope_type == KeyEnvelopeType::Kdf);
+    match opt_kdf_envelope {
+        Some(key_envelope) => {
+            log::debug!("About to build key wrapper from key envelope");
+            let key_wrapper = key_wrapper::from_key_envelope(key_envelope)?;
+            let kdf_wrapper = key_wrapper.expect_kdf_based()?;
+            log::debug!("Key wrapper reconstructed about to unwrap key");
+            Ok((kdf_wrapper.unwrap_key(password)?, key_wrapper))
         }
-        KdfAlgorithm::Invalid => Err(crate::error::Error::InvalidAlgorithm(
-            "Invalid KDF algorithm".to_string(),
-        )),
-        #[cfg(test)]
-        KdfAlgorithm::Test => {
-            use sha2::Digest;
-            let mut hasher = sha2::Sha256::new();
-            hasher.update(password);
-            hasher.update(&header.kdf_raw_params);
-            let key: [u8; 32] = hasher.finalize().into();
-            Ok(key.to_vec())
+        None => {
+            log::debug!("Key derivation failed");
+            return Err(crate::error::Error::DecryptionError(
+                "File was not encrypted with a password".to_string(),
+            ));
         }
     }
 }
 
+/// Setup file decryption
 pub fn setup_file_decryption(
     manifest_blob: &mut Blob,
     password: &str,
@@ -195,12 +203,13 @@ pub fn setup_file_decryption(
     let blob_header = manifest_blob.get_header().clone().ok_or_else(|| {
         crate::error::Error::BlobParsingError("Error while parsing blob header".to_string())
     })?;
-    let key = derive_key_from_header(&blob_header, password)?;
+    let (key, key_wrapper) = derive_key_from_header(&blob_header, password)?;
     log::debug!("Key derived from header: {:?}", key);
     log::debug!("About to create context");
     Ok(CypherContext::for_decryption(
         blob_header,
         CypherKey::with_key(key),
+        key_wrapper,
     )?)
 }
 
@@ -223,22 +232,55 @@ fn append_random_padding(buffer: &mut Vec<u8>, padding_size: usize) {
     rand::thread_rng().fill_bytes(&mut buffer[old_len..]);
 }
 
-pub fn encrypt(
+pub(crate) fn encrypt_in_place(
+    data: &mut [u8],
+    key: &[u8; 32],
+    aes256gcm_params: &Aes256GcmParams,
+) -> Result<Vec<u8>, crate::error::Error> {
+    let nonce = Nonce::from_slice(&aes256gcm_params.nonce);
+    let mut encryptor_foreal = Aes256Gcm::new(key.into());
+    let auth_tag = encryptor_foreal
+        .encrypt_in_place_detached(nonce, b"", &mut data[..])
+        .map_err(|e| crate::error::Error::EncryptionError(e.to_string()))?;
+    Ok(auth_tag.to_vec())
+}
+
+pub(crate) fn decrypt_in_place(
+    encrypted_data: &mut [u8],
+    key: &[u8; 32],
+    aes256gcm_params: &Aes256GcmParams,
+    auth_tag: &Vec<u8>,
+) -> Result<(), crate::error::Error> {
+    let mut cipher = Aes256Gcm::new(key.into());
+    let nonce = Nonce::from_slice(&aes256gcm_params.nonce);
+
+    let auth_tag = Tag::from_exact_iter(auth_tag.clone().into_iter());
+    cipher
+        .decrypt_in_place_detached(nonce, b"", encrypted_data, auth_tag.as_ref().unwrap())
+        .map_err(|e| crate::error::Error::DecryptionError(e.to_string()))?;
+    Ok(())
+}
+
+pub(crate) fn encrypt_to_blob(
     data: &[u8],
     encryption_context: &CypherContext,
 ) -> Result<Blob, crate::error::Error> {
     let mut blob_header = encryption_context.blob_header.clone();
-    blob_header.authentication_data = vec![0u8; 16]; // AES256-GCM tag length
+    for kw in encryption_context.get_key_wrappers() {
+        blob_header.envelopes.push(KeyEnvelope::new ( kw.envelope_type(), kw.to_bytes()? ));
+    }
+    blob_header.authentication_data = vec![0u8; 16]; // 16 = AES256-GCM authentication tag length
     blob_header.authentication_data_length = blob_header.authentication_data.len() as u16;
     blob_header.cipher_raw_params = encryption_context.aes256gcm_params.to_bytes()?;
     blob_header.cipher_param_length = blob_header.cipher_raw_params.len() as u32;
 
     log::debug!(
-        "Encrypting with:\n  KDF parameters: {:?}",
-        blob_header.kdf_raw_params
+        r#"Encrypting with:
+  nonce: {:?}
+  type of file: {:?}"#,
+        &encryption_context.aes256gcm_params.nonce,
+        encryption_context.file_type
     );
-    log::debug!("  nonce: {:?}", &encryption_context.aes256gcm_params.nonce);
-    log::debug!("  type of file: {:?}", encryption_context.file_type);
 
     let padding_size = get_padding_size(data.len());
     let meta_data = Metadata::new(
@@ -248,7 +290,7 @@ pub fn encrypt(
         padding_size as u32,
     );
     let metadata_bytes = meta_data.to_bytes()?;
-    let blob_header_len = blob_header.serialized_size();
+    let blob_header_len = blob_header.serialized_size()?;
     let mut blob =
         Vec::with_capacity(blob_header_len + metadata_bytes.len() + data.len() + padding_size);
     blob.resize(blob_header_len, 0u8);
@@ -258,8 +300,6 @@ pub fn encrypt(
     append_random_padding(&mut blob, padding_size);
     blob_header.cipher_length = (blob.len() - blob_header_len) as u64;
 
-    let aes256gcm_params = &encryption_context.aes256gcm_params;
-    let nonce = Nonce::from_slice(&aes256gcm_params.nonce);
     let key: [u8; 32] = encryption_context
         .cypher_key
         .get_key()
@@ -268,10 +308,12 @@ pub fn encrypt(
         .unwrap();
     log::debug!("  key: {:?}", key);
 
-    let mut encryptor_foreal = Aes256Gcm::new(&key.into());
-    let auth_tag = encryptor_foreal
-        .encrypt_in_place_detached(nonce, b"", &mut blob[blob_header_len..])
-        .map_err(|e| crate::error::Error::EncryptionError(e.to_string()))?;
+    let auth_tag = encrypt_in_place(
+        &mut blob[blob_header_len..],
+        &key,
+        &encryption_context.aes256gcm_params,
+    )?;
+
     assert!(blob_header.authentication_data_length as usize == auth_tag.len());
     assert!(blob_header.authentication_data.len() == auth_tag.len());
 
@@ -285,30 +327,15 @@ pub fn encrypt(
         "Writing blob header with cipher_parameters_length = {}",
         blob_header.cipher_param_length
     );
-    blob_header.write_to_slice(&mut blob[..blob_header_len]);
+    blob_header.write_to_slice(&mut blob[..blob_header_len])?;
 
     Ok(Blob::new_parsed(blob, blob_header, blob_header_len as u64))
 }
 
-pub struct DecryptionResult {
-    file_name: String,
-    data: Vec<u8>,
-}
-
-impl DecryptionResult {
-    pub fn new(file_name: String, data: Vec<u8>) -> Self {
-        Self { file_name, data }
-    }
-
-    pub fn file_name(&self) -> String {
-        self.file_name.clone()
-    }
-
-    pub fn data(&self) -> Vec<u8> {
-        self.data.clone()
-    }
-}
-
+/// Decrypts a blob and returns the result.
+/// An appropriate error is returned in case of decryption failure.
+/// @param [in/out] blob the blob to decrypt
+/// @parma [in] decryption_context the context in which the decryption takes place
 pub fn decrypt_blob(
     blob: &mut Blob,
     decryption_context: &CypherContext,
@@ -343,30 +370,29 @@ pub fn decrypt_blob(
         })?;
     log::debug!("  key: {:?}", key);
 
-    let mut cipher = Aes256Gcm::new(&key.into());
-    let nonce = Nonce::from_slice(&cipher_params.nonce);
     let after_header_pos = blob.get_position_after_header().unwrap();
+    let decrypted_data = &mut blob.data_mut()[after_header_pos as usize..];
     log::debug!("** After header position: {:?} **", after_header_pos);
     log::debug!("** Cipher length: {:?} **", blob_header.cipher_length);
-    let encrypted_data = &mut blob.data_mut()[after_header_pos as usize..];
     log::debug!(
         "Encrypted bytes: {:02x?}",
-        &encrypted_data[..128.min(encrypted_data.len())]
+        &decrypted_data[..128.min(decrypted_data.len())]
     );
-    let auth_tag = Tag::from_exact_iter(blob_header.authentication_data.clone().into_iter());
-    cipher
-        .decrypt_in_place_detached(nonce, b"", encrypted_data, auth_tag.as_ref().unwrap())
-        .map_err(|e| crate::error::Error::DecryptionError(e.to_string()))?;
-    let decrypted_data = encrypted_data;
+    decrypt_in_place(
+        decrypted_data,
+        &key,
+        &cipher_params,
+        &blob_header.authentication_data,
+    )?;
+    log::debug!(
+        "Decrypted bytes: {:02x?}",
+        &decrypted_data[..128.min(decrypted_data.len())]
+    );
     // decrypted_data is expected to look like this:
     // metadata length (4 bytes unsigned LE)
     // metadata
     // data
     // padding
-    log::debug!(
-        "Decrypted bytes: {:02x?}",
-        &decrypted_data[..128.min(decrypted_data.len())]
-    );
 
     const METADATA_LENGTH_LENGTH: usize = size_of::<u32>();
     let metadata_length_bytes: [u8; METADATA_LENGTH_LENGTH] = decrypted_data

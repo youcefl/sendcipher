@@ -13,6 +13,6 @@ pub use blob_header::*;
 pub(crate) use blob::*;
 pub use crypto::*;
 pub(crate) use cypher_key::*;
-pub use key_wrapper::*;
+pub(crate) use key_wrapper::*;
 pub use manifest::*;
 

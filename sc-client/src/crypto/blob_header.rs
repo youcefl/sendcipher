@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use std::io::{Cursor, Read, Write};
 
 mod constants {
-    pub const CURRENT_BLOB_HEADER_VERSION: u32 = 0;
+    pub const CURRENT_BLOB_HEADER_VERSION: u32 = 1;
 }
 
 #[repr(C)]
@@ -32,15 +32,53 @@ pub struct HeaderPrefix {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlobHeader {
     pub prefix: HeaderPrefix,
-    pub kdf_algorithm: KdfAlgorithm,
-    pub kdf_param_length: u32,
+    pub envelopes: Vec<KeyEnvelope>,
     pub cipher_algorithm: CipherAlgorithm,
     pub cipher_param_length: u32,
-    pub kdf_raw_params: Vec<u8>,
     pub cipher_raw_params: Vec<u8>,
     pub authentication_data_length: u16,
     pub authentication_data: Vec<u8>,
     pub cipher_length: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KeyEnvelope {
+    pub version: u32,
+    pub envelope_type: KeyEnvelopeType,
+    pub envelope_data: Vec<u8>,
+}
+
+impl KeyEnvelope {
+    const CURRENT_VERSION: u32 = 1;
+    pub fn new(envelope_type: KeyEnvelopeType, envelope_data: Vec<u8>) -> Self {
+        Self {
+            version: Self::CURRENT_VERSION,
+            envelope_type,
+            envelope_data,
+        }
+    }
+    pub fn envelope_data(&self) -> &Vec<u8> {
+        &self.envelope_data
+    }
+}
+
+#[repr(u8)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum KeyEnvelopeType {
+    Invalid = 0,
+    Kdf = 1,
+    Pgp = 2,
+    Age = 3,
+}
+
+impl KeyEnvelopeType {
+    pub fn from_bytes(data: &[u8]) -> Result<(KeyEnvelopeType, usize), crate::error::Error> {
+        Ok((
+            bincode::deserialize(data)
+                .map_err(|e| crate::error::Error::DeserializationError(e.to_string()))?,
+            1,
+        ))
+    }
 }
 
 #[repr(u32)]
@@ -64,29 +102,46 @@ impl CipherAlgorithm {
     }
 }
 
-#[repr(u32)]
+#[repr(u16)]
 #[derive(Debug, Clone, Serialize, Deserialize, Copy, PartialEq)]
 pub enum KdfAlgorithm {
     Invalid = 0,
     Argon2id = 1,
-    #[cfg(test)]
-    // Tests only, do not use in production
-    Test = u32::MAX,
 }
 
 impl KdfAlgorithm {
-    pub fn from_u32(value: u32) -> Option<Self> {
+    pub fn from_u16(value: u16) -> Option<Self> {
         match value {
             0 => Some(Self::Invalid),
             1 => Some(Self::Argon2id),
-            #[cfg(test)]
-            u32::MAX => Some(Self::Test),
             _ => None,
         }
     }
 
-    pub fn as_u32(self) -> u32 {
-        self as u32
+    pub fn as_u16(self) -> u16 {
+        self as u16
+    }
+
+    pub fn to_bytes(&self) -> [u8; 2] {
+        self.as_u16().to_le_bytes()
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> Result<(KdfAlgorithm, usize), crate::error::Error> {
+        if bytes.len() < 2 {
+            return Err(crate::error::Error::DeserializationError(
+                format!(
+                    "Cannot read an u16 from a byte sequence of length {:?}",
+                    bytes.len()
+                )
+                .to_string(),
+            ));
+        }
+        match Self::from_u16(u16::from_le_bytes(bytes[0..2].try_into().unwrap())) {
+            Some(kdf_algo) => Ok((kdf_algo, 2 as usize)),
+            None => Err(crate::error::Error::DeserializationError(
+                "Unexpected KDF algorithm tag value".to_string(),
+            )),
+        }
     }
 }
 
@@ -214,21 +269,25 @@ impl HeaderPrefix {
 }
 
 impl BlobHeader {
-    pub fn serialized_size(&self) -> usize {
-        HeaderPrefix::length()
-            + size_of_val(&self.kdf_algorithm)
-            + size_of_val(&self.kdf_param_length)
+    pub fn serialized_size(&self) -> Result<usize, crate::error::Error> {
+        Ok(HeaderPrefix::length()
+            + self.size_of_envelopes()?
             + size_of_val(&self.cipher_algorithm)
             + size_of_val(&self.cipher_param_length)
-            + self.kdf_raw_params.len()
             + self.cipher_raw_params.len()
             + size_of_val(&self.authentication_data_length)
             + self.authentication_data.len()
-            + size_of_val(&self.cipher_length)
+            + size_of_val(&self.cipher_length))
     }
 
-    pub fn get_cipher_length_pos(&self) -> usize {
-        self.serialized_size() - size_of_val(&self.cipher_length)
+    fn size_of_envelopes(&self) -> Result<usize, crate::error::Error> {
+        Ok(bincode::serialized_size(&self.envelopes)
+            .map_err(|e| crate::error::Error::SerializationError(e.to_string()))?
+            as usize)
+    }
+
+    pub fn get_cipher_length_pos(&self) -> Result<usize, crate::error::Error> {
+        Ok(self.serialized_size()? - size_of_val(&self.cipher_length))
     }
 
     pub fn get_cipher_length_length(&self) -> usize {
@@ -238,47 +297,49 @@ impl BlobHeader {
     pub fn write_to_slice(&self, buffer: &mut [u8]) -> Result<(), crate::error::Error> {
         let mut copied_prefix = self.prefix.clone();
         let mut cursor = Cursor::new(&mut buffer[..]);
+        // We write a header prefix with a temporary remaining_bytes value until
+        // the real one is known
         copied_prefix.write_all(&mut cursor)?;
         let end_of_prefix_pos = cursor.position() as u32;
-        cursor.write_all(&self.kdf_algorithm.as_u32().to_le_bytes())?;
-        cursor.write_all(&self.kdf_param_length.to_le_bytes())?;
+        log::debug!("Writing key envelopes at offset {:?}", end_of_prefix_pos);
+        bincode::serialize_into(&mut cursor, &self.envelopes)
+            .map_err(|e| crate::error::Error::SerializationError(e.to_string()))?;
         cursor.write_all(&self.cipher_algorithm.as_u32().to_le_bytes())?;
         cursor.write_all(&self.cipher_param_length.to_le_bytes())?;
-        cursor.write_all(&self.kdf_raw_params)?;
         cursor.write_all(&self.cipher_raw_params)?;
         cursor.write_all(&self.authentication_data_length.to_le_bytes())?;
         cursor.write_all(&self.authentication_data)?;
         cursor.write_all(&self.cipher_length.to_le_bytes())?;
         let end_of_header_pos = cursor.position() as u32;
         copied_prefix.remaining_header_bytes = end_of_header_pos - end_of_prefix_pos;
+        // Overwrite header prefix with correct remaining_bytes value
         let mut cursor2 = Cursor::new(&mut buffer[..]);
         copied_prefix.write_all(&mut cursor2)?;
+        log::debug!("Blob header written to buffer: {:02x?}", buffer);
         Ok(())
     }
 
-    pub fn to_bytes(&self) -> Result<Vec<u8>, std::io::Error> {
-        let mut buffer = Vec::with_capacity(self.serialized_size());
-        self.write_to_slice(&mut buffer);
+    pub fn to_bytes(&self) -> Result<Vec<u8>, crate::error::Error> {
+        let mut buffer = Vec::with_capacity(self.serialized_size()?);
+        self.write_to_slice(&mut buffer)?;
         Ok(buffer)
     }
 
     pub fn new() -> BlobHeader {
-        let mut inst = BlobHeader {
+        Self {
             prefix: HeaderPrefix::new(),
-            kdf_algorithm: KdfAlgorithm::Invalid,
-            kdf_param_length: 0,
+            envelopes: vec![],
             cipher_algorithm: CipherAlgorithm::Invalid,
             cipher_param_length: 0,
-            kdf_raw_params: vec![0u8; 0],
             cipher_raw_params: vec![0u8; 0],
             authentication_data_length: 0,
             authentication_data: vec![0u8; 0],
             cipher_length: 0,
-        };
-        inst
+        }
     }
 
     pub fn parse(buffer: &[u8]) -> Result<(Self, u64), crate::error::Error> {
+        log::debug!("Parsing buffer form {:02x?} [truncated to 256 bytes]", &buffer[..buffer.len().min(256)]);
         let mut file_header = BlobHeader::new();
         // Read prefix (magic, version, remaining_bytes) and all the following fields
         let (prefix, header_prefix_length) = HeaderPrefix::parse(buffer)?;
@@ -293,10 +354,12 @@ impl BlobHeader {
         }
         file_header.prefix = prefix.unwrap();
         let mut cursor = Cursor::new(&buffer[header_prefix_length..]);
+        log::debug!("Reading key envelopes at offset {:?}", header_prefix_length);
+        file_header.envelopes = bincode::deserialize_from(&mut cursor)
+            .map_err(|e| crate::error::Error::DeserializationError(e.to_string()))?;
+        log::debug!("Read {:?} key envelope", file_header.envelopes.len());
+        log::debug!("Envelope: {:?}", file_header.envelopes.first());
 
-        file_header.kdf_algorithm = KdfAlgorithm::from_u32(cursor.read_u32::<LittleEndian>()?)
-            .expect("Invalid KDF algorithm id");
-        file_header.kdf_param_length = cursor.read_u32::<LittleEndian>()?;
         file_header.cipher_algorithm =
             CipherAlgorithm::from_u32(cursor.read_u32::<LittleEndian>()?)
                 .expect("Invalid cipher algorithm id");
@@ -305,8 +368,6 @@ impl BlobHeader {
             "Cipher parameters length: {}",
             file_header.cipher_param_length
         );
-        file_header.kdf_raw_params = vec![0u8; file_header.kdf_param_length as usize];
-        cursor.read_exact(&mut file_header.kdf_raw_params)?;
         file_header.cipher_raw_params = vec![0u8; file_header.cipher_param_length as usize];
         cursor.read_exact(&mut file_header.cipher_raw_params)?;
         file_header.authentication_data_length = cursor.read_u16::<LittleEndian>()?;
@@ -328,28 +389,22 @@ impl BlobHeader {
 
         Ok((file_header, header_prefix_length as u64 + cursor.position()))
     }
-
-    pub fn change_salt(&mut self, new_salt: Vec<u8>) -> Result<(), crate::error::Error> {
-        match self.kdf_algorithm {
-            KdfAlgorithm::Argon2id => {
-                let (mut params, _) = Argon2idParams::from_bytes(&self.kdf_raw_params)?;
-                params.salt = new_salt;
-                self.kdf_raw_params = Argon2idParams::to_bytes(&params)?;
-                self.kdf_param_length = self.kdf_raw_params.len() as u32;
+    /*
+        fn change_salt(&mut self, new_salt: Vec<u8>) -> Result<(), crate::error::Error> {
+            // There is at most one KDF envelope, find it and update it.
+            // The linear search is OK because there is not going to be
+            // hundreds of envelopes.
+            let opt_key_envelope = self
+                .envelopes
+                .iter()
+                .find(|ke| ke.envelope_type == KeyEnvelopeType::Kdf);
+            match opt_key_envelope {
+                Some(key_envelope) => {}
+                None => {}
             }
-            KdfAlgorithm::Invalid => {
-                return Err(crate::error::Error::InvalidAlgorithm(
-                    "Invalid KDF algorithm".to_string(),
-                ));
-            }
-            #[cfg(test)]
-            KdfAlgorithm::Test => {
-                self.kdf_param_length = new_salt.len() as u32;
-                self.kdf_raw_params = new_salt;
-            }
+            Ok(())
         }
-        Ok(())
-    }
+    */
 }
 
 impl Argon2idParams {

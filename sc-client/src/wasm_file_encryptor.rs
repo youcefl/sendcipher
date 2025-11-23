@@ -217,7 +217,10 @@ impl WasmFileEncryptor {
                 chunk_index
             ))
         })?;
-        let encryption_context = self.encryptor.get_encryption_context(chunk);
+        let encryption_context = self
+            .encryptor
+            .get_encryption_context(chunk)
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
 
         serde_cbor::to_vec(&encryption_context).map_err(|e| JsValue::from_str(&e.to_string()))
     }

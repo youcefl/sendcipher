@@ -25,6 +25,8 @@ pub enum Error {
     SerializationError(String),
     #[error("{0}")]
     DeserializationError(String),
+    #[error("{0}")]
+    LogicError(String)
 }
 
 impl From<String> for Error {
