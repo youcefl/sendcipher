@@ -8,6 +8,7 @@ use crate::crypto::{Argon2IdKeyProducer, CypherContext};
 use crate::crypto::{Argon2idParams, BlobHeader, CypherKey};
 use crate::stream_encryptor::*;
 use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::io::Cursor;
 #[cfg(feature = "wasm")]
 use wasm_bindgen::prelude::*;
@@ -18,11 +19,20 @@ use web_sys::js_sys;
 pub struct WasmFileEncryptor {
     /// Underlying encryptor
     encryptor: StreamEncryptor<RandomChunkGenerator>,
-    /// Chunks to encrypt and upload indexed by their indexes
+    /// Chunks to encrypt and upload indexed by their indexes.
+    /// As the name implies, once a chunk is encrypted it is removed from this map
+    /// to avoid unbounded memory consumption.
     unencrypted_chunks: BTreeMap<u32, Chunk>,
     /// Index of the last chunk received from the underlying encryptor
     /// is None until we get a chunk
     last_chunk_index: Option<u32>,
+    /// Chunk spans dictionary, maps chunk index -> corresponding span in the original file.
+    /// This is for progress tracking: each time a chunk is fully processed the user of this
+    /// class can request the corresponding span to know by how much of the processing of the
+    /// file has progressed.
+    /// It is OK to have an entry for each chunk: even a 96GB file produces only about 8200 spans
+    /// (for reasonnable chunk sizes i.e. 8MB-16MB range).
+    spans: HashMap<u32, Span>
 }
 
 #[cfg(feature = "wasm")]
@@ -46,6 +56,7 @@ impl WasmFileEncryptor {
             )?,
             unencrypted_chunks: BTreeMap::<u32, Chunk>::new(),
             last_chunk_index: None,
+            spans: HashMap::<u32, Span>::new()
         })
     }
 
@@ -109,7 +120,7 @@ impl WasmFileEncryptor {
         self.encryptor.get_chunks_count() as u32
     }
 
-    /// Handles new chunks received from the underlying encrypter and returns the ones that are ready
+    /// Handles new chunks received from the underlying encryptor and returns the ones that are ready
     /// Upon reception the chunks are registered in self.unencrypted_chunks
     /// (which maps them by their indexes).
     /// @return indexes of the received chunks that are ready
@@ -120,7 +131,9 @@ impl WasmFileEncryptor {
             if chnk.is_ready() {
                 result.push(index);
             }
+            let span = Span::new(chnk.span().start(), chnk.span().size());
             self.unencrypted_chunks.insert(index, chnk);
+            self.spans.insert(index, span);
         });
         result
     }
@@ -229,6 +242,45 @@ impl WasmFileEncryptor {
     #[wasm_bindgen]
     pub fn get_registered_chunks_count(&self) -> u32 {
         return self.encryptor.get_registered_chunks_count() as u32;
+    }
+
+    /// Returns the span corresponding to the chunk in the original file
+    /// Reports an error on invalid chunk index
+    /// @pre chunk_index is a valid  chunk index i.e. results from a call to process_data or finalize.
+    #[wasm_bindgen]
+    pub fn get_chunk_span(&self, chunk_index: u32) -> Result<Span, JsValue> {
+        match self.spans.get(&chunk_index) {
+            Some(span) => Ok(span.clone()),
+            None => Err(JsValue::from_str("Invalid chunk index"))
+        }
+    }
+}
+
+#[cfg(feature="wasm")]
+#[derive(Clone)]
+#[wasm_bindgen]
+struct Span {
+    /// Start offset
+    start: u64,
+    /// Length
+    length: u64
+}
+
+#[cfg(feature = "wasm")]
+#[wasm_bindgen]
+impl Span {
+    fn new(start: u64, length: u64) -> Self {
+        Self {start, length}
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn start(&self) -> u64 {
+        self.start
+    }
+
+    #[wasm_bindgen(getter)]
+    pub fn length(&self) -> u64 {
+        self.length
     }
 }
 
