@@ -24,13 +24,15 @@ impl<C: ChunkGenerator> StreamEncryptor<C> {
         chunk_generator: C,
         make_key_wrapper: impl FnOnce(&Vec<u8>) -> Result<AnyKeyWrapper, crate::error::Error>,
     ) -> Result<Self, crate::error::Error> {
-        let file_enc_ctx = crypto::prepare_file_encryption(file_name, make_key_wrapper)
-            .map_err(|e| error::Error::EncryptionError(e.to_string()))?;
+        let manifest = Manifest::new(file_name.to_string(), 0)?;
+        let file_enc_ctx =
+            crypto::prepare_file_encryption(file_name, manifest.mfp(), make_key_wrapper)
+                .map_err(|e| error::Error::EncryptionError(e.to_string()))?;
 
         let inst = Self {
             chunk_generator: chunk_generator,
             encryption_context: file_enc_ctx,
-            manifest: Arc::new(RwLock::new(Manifest::new(file_name.to_string(), 0))),
+            manifest: Arc::new(RwLock::new(manifest)),
         };
         Ok(inst)
     }
@@ -93,6 +95,11 @@ impl<C: ChunkGenerator> StreamEncryptor<C> {
         let file_size = self.chunk_generator.chunked_bytes_count();
         self.manifest.write().unwrap().set_file_size(file_size);
         remaining_chunks
+    }
+
+    /// Returns the identifier of the algorithm to use for computing chunk checksums
+    pub fn chunk_hash_algorithm(&self) -> ChecksumAlgorithm {
+        self.manifest.read().unwrap().checksum_algorithm()
     }
 
     /// Returns the given chunks as encrypted data
@@ -161,7 +168,10 @@ impl<C: ChunkGenerator> StreamEncryptor<C> {
 
     /// Returns chunk encryption context
     /// @pre chunk must be ready for encryption
-    pub(crate) fn get_encryption_context(&self, chunk: &Chunk) -> Result<CypherContext, crate::error::Error> {
+    pub(crate) fn get_encryption_context(
+        &self,
+        chunk: &Chunk,
+    ) -> Result<CypherContext, crate::error::Error> {
         assert!(chunk.is_ready(), "Chunk not ready for encryption");
 
         Self::derive_chunk_encryption_context(&self.encryption_context, chunk.index())
@@ -173,7 +183,40 @@ impl<C: ChunkGenerator> StreamEncryptor<C> {
     pub fn encrypt_chunk(&self, chunk: &Chunk) -> Result<Blob, error::Error> {
         assert!(chunk.is_ready(), "Chunk not ready for encryption");
 
-        Self::do_encrypt_chunk(&self.get_encryption_context(chunk)?, chunk.data())
+        let (blob, checksum) = Self::do_encrypt_chunk(
+            &self.get_encryption_context(chunk)?,
+            chunk.data(),
+            self.chunk_hash_algorithm(),
+        )?;
+        // @todo: maybe pull this synchronization point up if it improves the performances
+        // of the parallel version: simply make a version of the function that returns
+        // results for consumption in parallel_encrypt_chunks
+        self.update_chunk_checksum(chunk.index(), checksum);
+        Ok(blob)
+    }
+
+    fn update_chunk_checksum(&self, chunk_index: u64, chunk_checksum: Vec<u8>) {
+        let mut manifest = self.manifest.write().unwrap();
+        let chunks = manifest.chunks_mut();
+        let opt_value = chunks.get_mut(&chunk_index);
+        match opt_value {
+            Some(value) => value.1 = chunk_checksum.clone(),
+            None => {
+                chunks.insert(chunk_index, ("".to_string(), chunk_checksum.clone()));
+            }
+        };
+    }
+
+    fn update_chunk_id(&self, chunk_index: u64, chunk_id: &str) {
+        let mut manifest = self.manifest.write().unwrap();
+        let chunks = manifest.chunks_mut();
+        let opt_value = chunks.get_mut(&chunk_index);
+        match opt_value {
+            Some(value) => value.0 = chunk_id.to_string(),
+            None => {
+                chunks.insert(chunk_index, (chunk_id.to_string(), vec![]));
+            }
+        };
     }
 
     ///
@@ -193,14 +236,18 @@ impl<C: ChunkGenerator> StreamEncryptor<C> {
     /// @param[in] encryption_context encryption context (master key, params, etc..)
     /// @param[in] chunk_index index of the chunk
     /// @param[in] chunk_data data to be encrypted
+    /// @return A couple where first element is the encrypted blob and the second
+    /// is the checksum of the encrypted blob
     pub(crate) fn do_encrypt_chunk(
         encryption_context: &CypherContext,
         chunk_data: &[u8],
-    ) -> Result<Blob, error::Error> {
+        checksum_algorithm: ChecksumAlgorithm,
+    ) -> Result<(Blob, Vec<u8>), error::Error> {
         let encrypted_chunk = crypto::encrypt_to_blob(chunk_data, &mut encryption_context.clone())
             .map_err(|e| error::Error::Any(e.to_string()))?;
-
-        Ok(encrypted_chunk)
+        let mut checksum_computer = checksum_algorithm.get_checksum_computer();
+        checksum_computer.update(encrypted_chunk.data());
+        Ok((encrypted_chunk, checksum_computer.finalize()))
     }
 
     /// Returns an encrypted version of the manifest
@@ -222,11 +269,11 @@ impl<C: ChunkGenerator> StreamEncryptor<C> {
 
     /// Associates a string id to an encrypted chunk identified by its index
     pub fn register_encrypted_chunk(&mut self, chunk_index: u64, id: &str) {
-        self.manifest
-            .write()
-            .unwrap()
-            .chunks_mut()
-            .insert(chunk_index, id.to_string());
+        self.update_chunk_id(chunk_index, id);
+    }
+
+    pub(crate) fn register_encrypted_chunk_with_checksum(&mut self, chunk_index: u64, id: &str, checksum: Vec<u8>) {
+        self.manifest.write().unwrap().chunks_mut().insert(chunk_index, (id.to_string(), checksum));
     }
 
     /// Gets the id assigned to chunk at index chunk_index
@@ -243,7 +290,7 @@ impl<C: ChunkGenerator> StreamEncryptor<C> {
                 chunk_index
             )));
         }
-        Ok(entry.unwrap().1.clone())
+        Ok(entry.unwrap().1.0.clone())
     }
 
     /// Returns the total number of chunks so far
@@ -267,7 +314,9 @@ pub(crate) mod tests {
     use crate::lcg::*;
     use crate::test_utils::*;
 
-    fn create_encryptor(chunk_generator: RandomChunkGenerator) -> StreamEncryptor<RandomChunkGenerator> {
+    fn create_encryptor(
+        chunk_generator: RandomChunkGenerator,
+    ) -> StreamEncryptor<RandomChunkGenerator> {
         StreamEncryptor::new("whatever_file_name", chunk_generator, |k| {
             Ok(AnyKeyWrapper::Argon2id(Argon2idKeyWrapper::new(
                 "whatever!password",
@@ -427,10 +476,7 @@ pub(crate) mod tests {
         });
         chunks.clear();
         encryption_duration += start.elapsed();
-        log::debug!(
-            "Chunking took {:?}",
-            chunking_duration
-        );
+        log::debug!("Chunking took {:?}", chunking_duration);
         log::debug!(
             "Encryption using up to {} threads took {:?}",
             num_threads,

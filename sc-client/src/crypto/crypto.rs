@@ -3,6 +3,8 @@
 * Copyright Youcef Lemsafer, all rights reserved.
 */
 
+use std::fs::File;
+
 use crate::crypto::{random::get_rand_bytes, *};
 use aes_gcm::{
     Aes256Gcm, Nonce, Tag,
@@ -18,6 +20,10 @@ pub(crate) struct CypherContext {
     file_name: String,
     /// Type of file being encrypted/decrypted
     file_type: FileType,
+    /// Manifest fingerprint
+    mfp: Vec<u8>,
+    /// Index used when encrypting a chunk
+    chunk_index: Option<u64>,
     /// The blob header.
     /// When encrypting it is written unciphered to the resulting blob.
     /// When decrypting it is read from the blob.
@@ -34,13 +40,16 @@ impl CypherContext {
     /// Constructs an instance for encryption
     fn for_encryption(
         file_name: &str,
+        mfp: Vec<u8>,
         blob_header: BlobHeader,
         cypher_key: CypherKey,
         key_wrapper: AnyKeyWrapper,
     ) -> Result<Self, crate::error::Error> {
         let inst = Self {
             file_name: file_name.to_string(),
-            file_type: FileType::RegularFile,
+            file_type: FileType::Manifest,
+            mfp: mfp,
+            chunk_index: None,
             blob_header,
             cypher_key,
             key_wrapper,
@@ -62,6 +71,8 @@ impl CypherContext {
         Ok(CypherContext {
             file_name: String::new(),
             file_type: FileType::Manifest,
+            mfp: vec![],
+            chunk_index: None,
             blob_header,
             cypher_key,
             key_wrapper,
@@ -77,6 +88,14 @@ impl CypherContext {
         self.file_name = file_name.to_string()
     }
 
+    pub(crate) fn set_mfp(&mut self, mfp: Vec<u8>) {
+        self.mfp = mfp;
+    }
+
+    pub fn get_chunk_index(&self) -> Option<u64> {
+        self.chunk_index
+    }
+
     pub fn get_key(&mut self) -> &Vec<u8> {
         self.cypher_key.get_key()
     }
@@ -90,6 +109,7 @@ impl CypherContext {
         chunk_index: u64,
     ) -> Result<&mut Self, crate::error::Error> {
         self.file_type = FileType::Chunk;
+        self.chunk_index = Some(chunk_index);
         let new_key = self.derive_chunk_key(chunk_index);
         let new_nonce = &crate::crypto::random::get_rand_bytes(12)
             .unwrap()
@@ -108,6 +128,7 @@ impl CypherContext {
 
     pub fn setup_chunk_decryption(&mut self, chunk_index: u64) -> &mut Self {
         self.file_type = FileType::Chunk;
+        self.chunk_index = Some(chunk_index);
         self.set_key(&self.derive_chunk_key(chunk_index));
         // Zeroize them to make it clear that they have to be read from
         // the chunk header!
@@ -117,6 +138,7 @@ impl CypherContext {
 
     pub fn setup_manifest_encryption(&mut self) -> &mut Self {
         self.file_type = FileType::Manifest;
+        self.chunk_index = None;
         self
     }
 
@@ -148,6 +170,7 @@ impl CypherContext {
 
 pub fn prepare_file_encryption(
     file_name: &str,
+    mfp: &Vec<u8>,
     make_key_wrapper: impl FnOnce(&Vec<u8>) -> Result<AnyKeyWrapper, crate::error::Error>,
 ) -> Result<CypherContext, crate::error::Error> {
     let mut file_header = BlobHeader::new();
@@ -157,6 +180,7 @@ pub fn prepare_file_encryption(
 
     Ok(CypherContext::for_encryption(
         file_name,
+        mfp.clone(),
         file_header,
         CypherKey::with_key(key),
         key_wrapper,
@@ -267,7 +291,9 @@ pub(crate) fn encrypt_to_blob(
 ) -> Result<Blob, crate::error::Error> {
     let mut blob_header = encryption_context.blob_header.clone();
     for kw in encryption_context.get_key_wrappers() {
-        blob_header.envelopes.push(KeyEnvelope::new ( kw.envelope_type(), kw.to_bytes()? ));
+        blob_header
+            .envelopes
+            .push(KeyEnvelope::new(kw.envelope_type(), kw.to_bytes()?));
     }
     blob_header.authentication_data = vec![0u8; 16]; // 16 = AES256-GCM authentication tag length
     blob_header.authentication_data_length = blob_header.authentication_data.len() as u16;
@@ -288,6 +314,13 @@ pub(crate) fn encrypt_to_blob(
         &encryption_context.file_name,
         data.len() as u64,
         padding_size as u32,
+        if (encryption_context.file_type == FileType::Chunk)
+            && (encryption_context.chunk_index.unwrap_or(1) == 0)
+        {
+            Some(encryption_context.mfp.clone())
+        } else {
+            None
+        },
     );
     let metadata_bytes = meta_data.to_bytes()?;
     let blob_header_len = blob_header.serialized_size()?;
@@ -412,6 +445,8 @@ pub fn decrypt_blob(
             "Invalid/corrupt file (bad metadata)".to_string(),
         ));
     }
+    check_mfp(decryption_context, &metadata)?;
+
     // {metadata version}{metadata length}{metadata}{data}{padding}
     let file_data_offset = METADATA_LENGTH_LENGTH + metadata_length;
     let file_data =
@@ -419,4 +454,27 @@ pub fn decrypt_blob(
     Ok(DecryptedBlob::new(blob_header, file_data, metadata))
 }
 
-//
+/// Checks that the mfp from the manifest is equal to the one found in the decrypted file metadata
+/// raises an error if they are different
+fn check_mfp(
+    decryption_context: &CypherContext,
+    metadata: &Metadata,
+) -> Result<(), crate::error::Error> {
+    // If present check MFP
+    match metadata.mfp.as_ref() {
+        Some(mfp_in_metadata) => {
+            if decryption_context.mfp != *mfp_in_metadata {
+                let chunk_index_as_string = match decryption_context.chunk_index {
+                    Some(index) => index.to_string(),
+                    None => "<unknown index>".to_string(),
+                };
+                Err(crate::error::Error::DecryptionError(
+                    format!("Corruption detected, chunk {}", chunk_index_as_string).to_string(),
+                ))
+            } else {
+                Ok(())
+            }
+        }
+        None => Ok(()),
+    }
+}

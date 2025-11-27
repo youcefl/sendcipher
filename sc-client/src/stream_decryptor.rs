@@ -52,11 +52,12 @@ impl StreamDecryptor {
             "About to deserialize manifest from {:02x?}",
             decrypted_blob.get_text()
         );
-        let manfest = Manifest::from_bytes(decrypted_blob.get_text())?;
+        let manifest = Manifest::from_bytes(decrypted_blob.get_text())?;
+        decryption_context.set_mfp(manifest.mfp().clone());
 
         Ok(Self {
             decryption_context: decryption_context,
-            manifest: manfest,
+            manifest,
         })
     }
 
@@ -81,23 +82,57 @@ impl StreamDecryptor {
         &self,
         cypherchunk: &mut CypherChunk,
     ) -> Result<DecryptedBlob, crate::error::Error> {
-        Self::do_decrypt_chunk(&self.decryption_context, cypherchunk)
+        Self::do_decrypt_chunk(
+            &self.decryption_context,
+            cypherchunk,
+            self.manifest.checksum_algorithm(),
+            self.get_chunk_checksum(cypherchunk.get_index())?,
+        )
     }
 
-    /// Decrypts a chunk and returns decrypted text
-    /// Takes ownership of the chunk and does the decryption in place
+    /// Decrypts a chunk and returns decrypted text.
+    /// Start by verifying the checksum, if the chunk does not have
+    /// the expected checksum an error is returned and the decryption
+    /// is not attempted.
+    /// If the checksum is correct the function takes ownership of the
+    /// chunk and does the decryption in place.
     pub(crate) fn do_decrypt_chunk(
         decryption_context: &CypherContext,
         cypherchunk: &mut CypherChunk,
+        checksum_algorithm: ChecksumAlgorithm,
+        checksum: &Vec<u8>,
     ) -> Result<DecryptedBlob, crate::error::Error> {
+        let mut hasher = checksum_algorithm.get_checksum_computer();
+        hasher.update(cypherchunk.blob.data());
+        let computed_checksum = hasher.finalize();
+        if checksum != &computed_checksum {
+            return Err(crate::error::Error::ChunkChecksumError(format!(
+                "Chunk {} has wrong checksum",
+                cypherchunk.get_index()
+            )));
+        }
+
         let mut chunk_decryption_context = decryption_context.clone();
         chunk_decryption_context.setup_chunk_decryption(cypherchunk.get_index());
+
         crypto::decrypt_blob(&mut cypherchunk.blob, &chunk_decryption_context)
     }
 
     /// Gets the manifest associated with the file being decrypted
     pub(crate) fn get_manifest(&self) -> &Manifest {
         &self.manifest
+    }
+
+    /// Returns the checksum of the chunk of given index, returns an error in case the index
+    /// has no corresponding chunk
+    fn get_chunk_checksum(&self, chunk_index: u64) -> Result<&Vec<u8>, crate::error::Error> {
+        match self.manifest.chunks().get(&chunk_index) {
+            Some(id_and_checksum) => Ok(&id_and_checksum.1),
+            None => Err(crate::error::Error::DecryptionError(format!(
+                "Invalid chunk index: {}",
+                chunk_index
+            ))),
+        }
     }
 }
 
@@ -125,7 +160,6 @@ mod tests {
             }
             buffer
         }
-
     }
 
     #[test]
@@ -144,9 +178,11 @@ mod tests {
             1u128,
         );
         let mut encryptor = StreamEncryptor::new("whatever_file_name.txt", chunk_generator, |k| {
-            Ok(AnyKeyWrapper::Argon2id(
-                Argon2idKeyWrapper::new("password", &create_argon2id_params_for_tests(), k)?,
-            ))
+            Ok(AnyKeyWrapper::Argon2id(Argon2idKeyWrapper::new(
+                "password",
+                &create_argon2id_params_for_tests(),
+                k,
+            )?))
         })
         .expect("Encryptor creation should succeed");
 
@@ -173,7 +209,13 @@ mod tests {
         assert_eq!(manifest.chunks_count(), 1);
         let chunks_dict = manifest.chunks();
         assert_eq!(chunks_dict.len(), 1);
-        assert_eq!(chunks_dict.get(&0u64), Some(&"id0".to_string()));
+        assert_eq!(
+            chunks_dict
+                .get(&0u64)
+                .expect("Chunk index 0 should be in the dictionary")
+                .0,
+            "id0".to_string()
+        );
 
         // Decrypt and check the unique chunk
         let (chunk_index, blob) = encrypted_blobs.first_mut().unwrap();

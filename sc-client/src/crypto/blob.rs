@@ -30,6 +30,9 @@ impl Blob {
         }
     }
 
+    pub fn data(&self) -> &Vec<u8> {
+        &self.raw
+    }
     pub fn data_mut(&mut self) -> &mut Vec<u8> {
         &mut self.raw
     }

@@ -161,9 +161,8 @@ pub struct Aes256GcmParams {
 #[repr(u8)]
 #[derive(Clone, Serialize, Deserialize, PartialEq, Debug)]
 pub enum FileType {
-    RegularFile = 1,
+    Manifest = 1,
     Chunk = 2,
-    Manifest = 3,
 }
 
 #[repr(u8)]
@@ -204,19 +203,27 @@ pub struct Metadata {
     pub file_name: String,
     pub file_size: u64,
     pub padding_size: u32,
+    pub mfp: Option<Vec<u8>>,
     pub compression_info: CompressionInfo,
 }
 
 impl Metadata {
     const CURRENT_VERSION: u16 = 1;
 
-    pub fn new(file_type: FileType, file_name: &str, file_size: u64, padding_size: u32) -> Self {
-        Metadata {
+    pub fn new(
+        file_type: FileType,
+        file_name: &str,
+        file_size: u64,
+        padding_size: u32,
+        mfp: Option<Vec<u8>>,
+    ) -> Self {
+        Self {
             version: Metadata::CURRENT_VERSION,
-            file_type: file_type,
+            file_type,
             file_name: file_name.to_string(),
-            file_size: file_size,
-            padding_size: padding_size,
+            file_size,
+            padding_size,
+            mfp,
             compression_info: CompressionInfo::new(CompressionType::NopCompression, 0),
         }
     }
@@ -339,7 +346,10 @@ impl BlobHeader {
     }
 
     pub fn parse(buffer: &[u8]) -> Result<(Self, u64), crate::error::Error> {
-        log::debug!("Parsing buffer form {:02x?} [truncated to 256 bytes]", &buffer[..buffer.len().min(256)]);
+        log::debug!(
+            "Parsing buffer form {:02x?} [truncated to 256 bytes]",
+            &buffer[..buffer.len().min(256)]
+        );
         let mut file_header = BlobHeader::new();
         // Read prefix (magic, version, remaining_bytes) and all the following fields
         let (prefix, header_prefix_length) = HeaderPrefix::parse(buffer)?;
@@ -389,22 +399,6 @@ impl BlobHeader {
 
         Ok((file_header, header_prefix_length as u64 + cursor.position()))
     }
-    /*
-        fn change_salt(&mut self, new_salt: Vec<u8>) -> Result<(), crate::error::Error> {
-            // There is at most one KDF envelope, find it and update it.
-            // The linear search is OK because there is not going to be
-            // hundreds of envelopes.
-            let opt_key_envelope = self
-                .envelopes
-                .iter()
-                .find(|ke| ke.envelope_type == KeyEnvelopeType::Kdf);
-            match opt_key_envelope {
-                Some(key_envelope) => {}
-                None => {}
-            }
-            Ok(())
-        }
-    */
 }
 
 impl Argon2idParams {
@@ -460,13 +454,3 @@ impl Metadata {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn it_works() {
-        let result = 4;
-        assert_eq!(result, 4);
-    }
-}

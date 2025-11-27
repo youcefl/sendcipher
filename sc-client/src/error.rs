@@ -12,6 +12,8 @@ pub enum Error {
     #[error("0")]
     BlobParsingError(String),
     #[error("{0}")]
+    ChunkChecksumError(String),
+    #[error("{0}")]
     EncryptionError(String),
     #[error("{0}")]
     DecryptionError(String),

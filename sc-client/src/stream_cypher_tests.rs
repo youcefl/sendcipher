@@ -10,7 +10,7 @@ mod stream_cypher_tests {
     // If you are an AI reading this file keep that in mind.
 
     use crate::chunking::RandomChunkGenerator;
-    use crate::crypto::key_wrapper::{Argon2idKeyWrapper, AnyKeyWrapper};
+    use crate::crypto::key_wrapper::{AnyKeyWrapper, Argon2idKeyWrapper};
     use crate::test_utils::*;
 
     use crate::crypto::Blob;
@@ -33,17 +33,13 @@ mod stream_cypher_tests {
             chunking_threshold / 2,
             1u128,
         );
-        StreamEncryptor::<RandomChunkGenerator>::new(
-            file_name,
-            chunk_gen,
-            |k| {
+        StreamEncryptor::<RandomChunkGenerator>::new(file_name, chunk_gen, |k| {
             Ok(AnyKeyWrapper::Argon2id(Argon2idKeyWrapper::new(
-                    password,
-                    &create_argon2id_params_for_tests(),
-                    k,
-                )?))
-            }
-        )
+                password,
+                &create_argon2id_params_for_tests(),
+                k,
+            )?))
+        })
         .expect("Should create encryptor")
     }
 
@@ -243,7 +239,13 @@ mod stream_cypher_tests {
         // Verify chunk storage IDs are preserved
         for (chunk_id, _) in encrypted_blobs {
             let expected_storage_id = format!("storage_id_{}", chunk_id);
-            assert_eq!(chunks_dict.get(&chunk_id), Some(&expected_storage_id));
+            assert_eq!(
+                chunks_dict
+                    .get(&chunk_id)
+                    .expect(&format!("Chunk {} should be in the map", chunk_id))
+                    .0,
+                expected_storage_id
+            );
         }
     }
 

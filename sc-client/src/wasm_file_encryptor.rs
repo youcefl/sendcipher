@@ -5,14 +5,25 @@ use crate::chunking::*;
 use crate::crypto::crypto;
 use crate::crypto::{Argon2IdKeyProducer, CypherContext};
 #[cfg(feature = "wasm")]
-use crate::crypto::{Argon2idParams, BlobHeader, CypherKey};
+use crate::crypto::{Argon2idParams, BlobHeader, ChecksumAlgorithm, CypherKey};
 use crate::stream_encryptor::*;
+#[cfg(feature = "wasm")]
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::io::Cursor;
 #[cfg(feature = "wasm")]
 use wasm_bindgen::prelude::*;
 use web_sys::js_sys;
+
+#[cfg(feature = "wasm")]
+#[derive(Serialize, Deserialize)]
+/// Intentionally no wasm_bindgen on this, the JS code has no business
+/// accessing it!
+pub struct WasmEncryptionContext {
+    cypher_context: CypherContext,
+    checksum_algorithm: ChecksumAlgorithm,
+}
 
 #[cfg(feature = "wasm")]
 #[wasm_bindgen]
@@ -23,16 +34,13 @@ pub struct WasmFileEncryptor {
     /// As the name implies, once a chunk is encrypted it is removed from this map
     /// to avoid unbounded memory consumption.
     unencrypted_chunks: BTreeMap<u32, Chunk>,
-    /// Index of the last chunk received from the underlying encryptor
-    /// is None until we get a chunk
-    last_chunk_index: Option<u32>,
     /// Chunk spans dictionary, maps chunk index -> corresponding span in the original file.
     /// This is for progress tracking: each time a chunk is fully processed the user of this
     /// class can request the corresponding span to know by how much of the processing of the
     /// file has progressed.
     /// It is OK to have an entry for each chunk: even a 96GB file produces only about 8200 spans
     /// (for reasonnable chunk sizes i.e. 8MB-16MB range).
-    spans: HashMap<u32, Span>
+    spans: HashMap<u32, Span>,
 }
 
 #[cfg(feature = "wasm")]
@@ -55,8 +63,7 @@ impl WasmFileEncryptor {
                 max_chunk_size as u64,
             )?,
             unencrypted_chunks: BTreeMap::<u32, Chunk>::new(),
-            last_chunk_index: None,
-            spans: HashMap::<u32, Span>::new()
+            spans: HashMap::<u32, Span>::new(),
         })
     }
 
@@ -170,12 +177,13 @@ impl WasmFileEncryptor {
     }
 
     /// Associates the id received from the server to a chunk after upload
-    /// @param index Index of the chunk
-    /// @param id String id received from the server for the chunk of given index
+    /// @param[in] index Index of the chunk
+    /// @param[in] id String id received from the server for the chunk of given index
+    /// @param[in] checksum the checksum of the chunk
     #[wasm_bindgen]
-    pub fn register_encrypted_chunk(&mut self, index: u32, server_id: &str) {
+    pub fn register_encrypted_chunk(&mut self, index: u32, server_id: &str, checksum: &[u8]) {
         self.encryptor
-            .register_encrypted_chunk(index as u64, server_id);
+            .register_encrypted_chunk_with_checksum(index as u64, server_id, checksum.to_vec());
     }
 
     #[wasm_bindgen]
@@ -223,7 +231,10 @@ impl WasmFileEncryptor {
     }
 
     #[wasm_bindgen]
-    pub fn get_raw_encryption_context(&self, chunk_index: u32) -> Result<Vec<u8>, JsValue> {
+    /// Returns the context needed for encrypting the chunk of given index
+    /// @param[in] chunk_index index of the chunk
+    /// @return array of bytes representing the context to be passed to encrypt_chunk
+    pub fn get_context(&self, chunk_index: u32) -> Result<Vec<u8>, JsValue> {
         let chunk = self.unencrypted_chunks.get(&chunk_index).ok_or_else(|| {
             JsValue::from_str(&format!(
                 "Requested encryption context missing (chunk {})",
@@ -234,8 +245,12 @@ impl WasmFileEncryptor {
             .encryptor
             .get_encryption_context(chunk)
             .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        let wasm_encryption_context = WasmEncryptionContext {
+            cypher_context: encryption_context,
+            checksum_algorithm: self.encryptor.chunk_hash_algorithm(),
+        };
 
-        serde_cbor::to_vec(&encryption_context).map_err(|e| JsValue::from_str(&e.to_string()))
+        serde_cbor::to_vec(&wasm_encryption_context).map_err(|e| JsValue::from_str(&e.to_string()))
     }
 
     /// Returns the number of chunks registered
@@ -251,26 +266,26 @@ impl WasmFileEncryptor {
     pub fn get_chunk_span(&self, chunk_index: u32) -> Result<Span, JsValue> {
         match self.spans.get(&chunk_index) {
             Some(span) => Ok(span.clone()),
-            None => Err(JsValue::from_str("Invalid chunk index"))
+            None => Err(JsValue::from_str("Invalid chunk index")),
         }
     }
 }
 
-#[cfg(feature="wasm")]
+#[cfg(feature = "wasm")]
 #[derive(Clone)]
 #[wasm_bindgen]
 struct Span {
     /// Start offset
     start: u64,
     /// Length
-    length: u64
+    length: u64,
 }
 
 #[cfg(feature = "wasm")]
 #[wasm_bindgen]
 impl Span {
     fn new(start: u64, length: u64) -> Self {
-        Self {start, length}
+        Self { start, length }
     }
 
     #[wasm_bindgen(getter)]
@@ -286,13 +301,48 @@ impl Span {
 
 #[cfg(feature = "wasm")]
 #[wasm_bindgen]
-pub fn encrypt_chunk(raw_encryption_context: &[u8], chunk_data: &[u8]) -> Result<Vec<u8>, JsValue> {
-    let encryption_context = serde_cbor::from_slice(raw_encryption_context)
-        .map_err(|e| JsValue::from_str(&e.to_string()))?;
-    let mut tmp =
-        StreamEncryptor::<RandomChunkGenerator>::do_encrypt_chunk(&encryption_context, chunk_data)
-            .map_err(|e| JsValue::from_str(&e.to_string()))?;
-    Ok(std::mem::take(tmp.data_mut()))
+/// Encrypts the given chunk data in the given context
+/// @param[in] context context obtained by calling WasmFileEncryptor::get_context(chunk_index)
+/// @return encryption result containing the encrypted blob and its checksum
+pub fn encrypt_chunk(context: &[u8], chunk_data: &[u8]) -> Result<EncryptionResult, JsValue> {
+    let wasm_encryption_context: WasmEncryptionContext =
+        serde_cbor::from_slice(context).map_err(|e| JsValue::from_str(&e.to_string()))?;
+    let (mut blob, checksum) = StreamEncryptor::<RandomChunkGenerator>::do_encrypt_chunk(
+        &wasm_encryption_context.cypher_context,
+        chunk_data,
+        wasm_encryption_context.checksum_algorithm
+    )
+    .map_err(|e| JsValue::from_str(&e.to_string()))?;
+    Ok(EncryptionResult {
+        blob: std::mem::take(blob.data_mut()),
+        checksum,
+    })
+}
+
+#[cfg(feature = "wasm")]
+#[wasm_bindgen]
+pub struct EncryptionResult {
+    /// The encrypted blob
+    blob: Vec<u8>,
+    /// The checksum of the encrypted blob
+    checksum: Vec<u8>,
+}
+
+#[cfg(feature = "wasm")]
+#[wasm_bindgen]
+impl EncryptionResult {
+    /// Returns the encrypted blob
+    /// Note: this consumes the blob, so only the first call will get it!
+    #[wasm_bindgen]
+    pub fn take_blob(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.blob)
+    }
+    #[wasm_bindgen]
+    /// The checksum of the encrypted blob
+    /// Note: this consumes the checksum, so only the first call will get it!
+    pub fn take_checksum(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.checksum)
+    }
 }
 
 #[cfg(feature = "wasm")]

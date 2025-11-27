@@ -35,10 +35,15 @@ serde_json = "1.0"
 serde_cbor = "0.11.2"
 thiserror = "1.0"
 log = "0.4.28"
+blake3 = "1.8.2"
 
 [dev-dependencies]
 test-case = "3.3"
 proptest = "1.0"
 
 [package.metadata.wasm-pack.profile.release]
-wasm-opt = false  # Deactivated for fast tests
+wasm-opt = true
+
+[package.metadata.wasm-bindgen]
+rustflags = ["-C", "target-feature=+simd128"]
+
