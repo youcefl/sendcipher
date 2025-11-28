@@ -3,9 +3,6 @@
 * Copyright Youcef Lemsafer, all rights reserved.
 */
 
-use std::fs::File;
-
-use crate::crypto::{random::get_rand_bytes, *};
 use aes_gcm::{
     Aes256Gcm, Nonce, Tag,
     aead::{AeadMutInPlace, KeyInit},
@@ -13,6 +10,7 @@ use aes_gcm::{
 use anyhow::Result;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
+use crate::crypto::{*, metadata::*};
 
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct CypherContext {
@@ -174,7 +172,7 @@ pub fn prepare_file_encryption(
     make_key_wrapper: impl FnOnce(&Vec<u8>) -> Result<AnyKeyWrapper, crate::error::Error>,
 ) -> Result<CypherContext, crate::error::Error> {
     let mut file_header = BlobHeader::new();
-    let key = get_rand_bytes(32)?;
+    let key = random::get_rand_bytes(32)?;
     let key_wrapper = make_key_wrapper(&key)?;
     file_header.cipher_algorithm = CipherAlgorithm::Aes256Gcm;
 

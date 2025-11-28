@@ -1,7 +1,8 @@
 /* Created on 2025.11.05 */
 /* Copyright Youcef Lemsafer, all rights reserved */
 
-use crate::crypto::blob_header::{self, *};
+use crate::crypto::blob_header::*;
+use crate::crypto::metadata::*;
 
 #[derive(Debug, Default)]
 pub(crate) struct Blob {
@@ -38,7 +39,7 @@ impl Blob {
     }
 
     pub fn parse_header(&mut self) -> Result<&mut Self, crate::error::Error> {
-        let (header, pos) = blob_header::BlobHeader::parse(&self.raw)?;
+        let (header, pos) = BlobHeader::parse(&self.raw)?;
         self.header = Some(header);
         self.pos_after_header = Some(pos);
         Ok(self)
@@ -63,20 +64,16 @@ pub(crate) struct DecryptedBlob {
 }
 
 impl DecryptedBlob {
-    pub fn default() -> Self {
-        Self {
-            header: None,
-            metadata: None,
-            text: vec![0u8; 0],
-        }
-    }
-
     pub fn new(header: BlobHeader, text: Vec<u8>, metadata: Metadata) -> Self {
         Self {
             header: Some(header),
             metadata: Some(metadata),
             text: text,
         }
+    }
+
+    pub fn get_blob_header(&self) -> &Option<BlobHeader> {
+        &self.header
     }
 
     pub fn get_metadata(&self) -> &Option<Metadata> {

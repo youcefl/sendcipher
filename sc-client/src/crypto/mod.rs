@@ -8,11 +8,13 @@ pub mod cypher_key;
 pub mod key_wrapper;
 pub mod manifest;
 pub mod random;
+pub mod metadata;
 
-pub use blob_header::*;
+pub(crate) use blob_header::*;
 pub(crate) use blob::*;
-pub use crypto::*;
+pub(crate) use crypto::*;
 pub(crate) use cypher_key::*;
 pub(crate) use key_wrapper::*;
-pub use manifest::*;
+pub(crate) use manifest::*;
+pub(crate) use metadata::*;
 
