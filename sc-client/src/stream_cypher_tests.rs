@@ -49,7 +49,7 @@ mod stream_cypher_tests {
     ) -> (Vec<(u64, Blob)>, Blob) {
         let mut chunks = Vec::new();
         chunks.extend(encryptor.process_data(data));
-        chunks.extend(encryptor.finalize());
+        chunks.extend(encryptor.on_end_of_data());
 
         let mut encrypted_blobs = encryptor
             .encrypt_chunks(&chunks)
@@ -61,7 +61,7 @@ mod stream_cypher_tests {
         }
 
         let manifest_blob = encryptor
-            .get_encrypted_manifest()
+            .finalize()
             .expect("Should get manifest");
 
         (encrypted_blobs, manifest_blob)
@@ -234,17 +234,15 @@ mod stream_cypher_tests {
         assert_eq!(decryptor.file_name(), custom_file_name);
 
         let manifest = decryptor.get_manifest();
-        let chunks_dict = manifest.chunks();
+        let chunks = manifest.chunks();
 
         // Verify chunk storage IDs are preserved
-        for (chunk_id, _) in encrypted_blobs {
-            let expected_storage_id = format!("storage_id_{}", chunk_id);
+        for (chunk_index, _) in encrypted_blobs {
+            let expected_storage_id = format!("storage_id_{}", chunk_index);
+            assert!((chunk_index as usize) < chunks.len(), "Chunk {} should be in the map", chunk_index);
             assert_eq!(
-                chunks_dict
-                    .get(&chunk_id)
-                    .expect(&format!("Chunk {} should be in the map", chunk_id))
-                    .0,
-                expected_storage_id
+                chunks[chunk_index as usize].id(),
+                &expected_storage_id
             );
         }
     }

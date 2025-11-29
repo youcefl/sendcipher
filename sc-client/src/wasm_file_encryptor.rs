@@ -76,11 +76,11 @@ impl WasmFileEncryptor {
         self.handle_new_chunks(chunks)
     }
 
-    /// Finalizes the encryption, to be called when the stream is exhausted
+    /// Signals the end of data, to be called when the stream is exhausted
     /// in order to get the remaining chunks in need of encryption.
     #[wasm_bindgen]
-    pub fn finalize(&mut self) -> Vec<u32> {
-        let chunks = self.encryptor.finalize();
+    pub fn on_end_of_data(&mut self) -> Vec<u32> {
+        let chunks = self.encryptor.on_end_of_data();
         self.handle_new_chunks(chunks)
     }
 
@@ -167,23 +167,41 @@ impl WasmFileEncryptor {
         }
     }
 
-    /// Returns encrypted manifest to be served as map of file chunks
-    pub fn get_encrypted_manifest(&self) -> Result<Vec<u8>, JsValue> {
-        let mut encrypted_manifest = self
-            .encryptor
-            .get_encrypted_manifest()
-            .map_err(|e| JsValue::from_str(&e.to_string()))?;
-        Ok(std::mem::take(encrypted_manifest.data_mut()))
+    /// Registers an encrypted chunk i.e. associates to it its id on the server
+    /// @param[in] chunk_index Index of the chunk
+    /// @param[in] id String id received from the server for the chunk of given index
+    /// @param[in] checksum The checksum of the chunk
+    /// @param[in] span The span corresponding to this chunk in the untransformed original file,
+    /// obtained by calling self.get_span(chunk_index).
+    #[wasm_bindgen]
+    pub fn register_encrypted_chunk(
+        &mut self,
+        chunk_index: u32,
+        server_id: &str,
+        checksum: &[u8],
+        span: Span,
+    ) {
+        use crate::crypto::ChunkDescriptor;
+
+        let chunk_desc = ChunkDescriptor::new(
+            server_id.to_string(),
+            checksum.to_vec(),
+            span.start(),
+            span.length(),
+        );
+        self.encryptor
+            .register_encrypted_chunk_descriptor(chunk_index as u64, chunk_desc);
     }
 
-    /// Associates the id received from the server to a chunk after upload
-    /// @param[in] index Index of the chunk
-    /// @param[in] id String id received from the server for the chunk of given index
-    /// @param[in] checksum the checksum of the chunk
-    #[wasm_bindgen]
-    pub fn register_encrypted_chunk(&mut self, index: u32, server_id: &str, checksum: &[u8]) {
-        self.encryptor
-            .register_encrypted_chunk_with_checksum(index as u64, server_id, checksum.to_vec());
+    /// Finalizes processing of the stream
+    /// Returns the encrypted manifest corresponding to the input file
+    /// @pre all chunks have been encrypted and registered
+    pub fn finalize(&mut self) -> Result<Vec<u8>, JsValue> {
+        let mut encrypted_manifest = self
+            .encryptor
+            .finalize()
+            .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        Ok(std::mem::take(encrypted_manifest.data_mut()))
     }
 
     #[wasm_bindgen]
@@ -263,7 +281,7 @@ impl WasmFileEncryptor {
     /// Reports an error on invalid chunk index
     /// @pre chunk_index is a valid  chunk index i.e. results from a call to process_data or finalize.
     #[wasm_bindgen]
-    pub fn get_chunk_span(&self, chunk_index: u32) -> Result<Span, JsValue> {
+    pub fn get_span(&self, chunk_index: u32) -> Result<Span, JsValue> {
         match self.spans.get(&chunk_index) {
             Some(span) => Ok(span.clone()),
             None => Err(JsValue::from_str("Invalid chunk index")),
@@ -284,7 +302,8 @@ struct Span {
 #[cfg(feature = "wasm")]
 #[wasm_bindgen]
 impl Span {
-    fn new(start: u64, length: u64) -> Self {
+    #[wasm_bindgen(constructor)]
+    pub fn new(start: u64, length: u64) -> Self {
         Self { start, length }
     }
 
@@ -302,9 +321,15 @@ impl Span {
 #[cfg(feature = "wasm")]
 #[wasm_bindgen]
 /// Encrypts the given chunk data in the given context
-/// @param[in] context context obtained by calling WasmFileEncryptor::get_context(chunk_index)
+/// @param[in] context context obtained by calling WasmFileEncryptor::get_context()
+/// @param[in] chunk_index the index of the chunk
+/// @param[in] chunk_data the data constituting the chunk
 /// @return encryption result containing the encrypted blob and its checksum
-pub fn encrypt_chunk(context: &[u8], chunk_data: &[u8]) -> Result<EncryptionResult, JsValue> {
+pub fn encrypt_chunk(
+    context: &[u8],
+    chunk_data: &[u8],
+    span: Span,
+) -> Result<EncryptionResult, JsValue> {
     let wasm_encryption_context: WasmEncryptionContext =
         serde_cbor::from_slice(context).map_err(|e| JsValue::from_str(&e.to_string()))?;
     let (mut blob, checksum) = StreamEncryptor::<RandomChunkGenerator>::do_encrypt_chunk(

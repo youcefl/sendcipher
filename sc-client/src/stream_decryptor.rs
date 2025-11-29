@@ -126,13 +126,13 @@ impl StreamDecryptor {
     /// Returns the checksum of the chunk of given index, returns an error in case the index
     /// has no corresponding chunk
     fn get_chunk_checksum(&self, chunk_index: u64) -> Result<&Vec<u8>, crate::error::Error> {
-        match self.manifest.chunks().get(&chunk_index) {
-            Some(id_and_checksum) => Ok(&id_and_checksum.1),
-            None => Err(crate::error::Error::DecryptionError(format!(
+        if chunk_index >= self.manifest.chunks_count() as u64 {
+            return Err(crate::error::Error::DecryptionError(format!(
                 "Invalid chunk index: {}",
                 chunk_index
-            ))),
+            )));
         }
+        Ok(self.manifest.chunks()[chunk_index as usize].checksum())
     }
 }
 
@@ -190,12 +190,12 @@ mod tests {
         let file_contents = utils::create_file_contents(10, &mut lcg);
         let mut chunks = Vec::new();
         chunks.extend(encryptor.process_data(&file_contents));
-        chunks.extend(encryptor.finalize());
+        chunks.extend(encryptor.on_end_of_data());
         let mut encrypted_blobs = encryptor.encrypt_chunks(&chunks).unwrap();
         encrypted_blobs
             .iter()
             .for_each(|blob| encryptor.register_encrypted_chunk(blob.0, &format!("id{}", blob.0)));
-        let mut manifest_blob = encryptor.get_encrypted_manifest().unwrap();
+        let mut manifest_blob = encryptor.finalize().unwrap();
         // In this test we want exactly one chunk (besides the manifest)
         assert_eq!(encrypted_blobs.len(), 1);
 
@@ -207,15 +207,9 @@ mod tests {
         assert_eq!(manifest.file_name(), "whatever_file_name.txt");
         assert_eq!(decryptor.file_name(), "whatever_file_name.txt");
         assert_eq!(manifest.chunks_count(), 1);
-        let chunks_dict = manifest.chunks();
-        assert_eq!(chunks_dict.len(), 1);
-        assert_eq!(
-            chunks_dict
-                .get(&0u64)
-                .expect("Chunk index 0 should be in the dictionary")
-                .0,
-            "id0".to_string()
-        );
+        let chunks = manifest.chunks();
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].id(), &"id0".to_string());
 
         // Decrypt and check the unique chunk
         let (chunk_index, blob) = encrypted_blobs.first_mut().unwrap();

@@ -1,67 +1,17 @@
 /* Created on 2025-10-24 */
 /* Copyright Youcef Lemsafer, all rights reserved */
 
-use blake3;
-use digest::Digest;
-use std::collections::BTreeMap;
+use digest::typenum::Length;
 
 use crate::crypto::random;
+use crate::crypto::checksum::*;
 
-#[repr(u16)]
-#[derive(serde::Serialize, serde::Deserialize, Clone, PartialEq, Default)]
-pub enum ChecksumAlgorithm {
-    #[default]
-    Blake3 = 1,
-    Sha256,
-    Sha384,
-    Sha512,
-}
-
-pub enum HashComputer {
-    Blake3(blake3::Hasher),
-    Sha256(sha2::Sha256),
-    Sha384(sha2::Sha384),
-    Sha512(sha2::Sha512),
-}
-
-impl ChecksumAlgorithm {
-    pub(crate) fn get_checksum_computer(&self) -> HashComputer {
-        match self {
-            ChecksumAlgorithm::Blake3 => HashComputer::Blake3(blake3::Hasher::new()),
-            ChecksumAlgorithm::Sha256 => HashComputer::Sha256(sha2::Sha256::new()),
-            ChecksumAlgorithm::Sha384 => HashComputer::Sha384(sha2::Sha384::new()),
-            ChecksumAlgorithm::Sha512 => HashComputer::Sha512(sha2::Sha512::new()),
-        }
-    }
-    pub(crate) fn checksum_length(&self) -> u32 {
-        match self {
-            ChecksumAlgorithm::Blake3 => blake3::OUT_LEN as u32,
-            ChecksumAlgorithm::Sha256 => 32u32,
-            ChecksumAlgorithm::Sha384 => 48u32,
-            ChecksumAlgorithm::Sha512 => 64u32,
-        }
-    }
-}
-
-impl HashComputer {
-    pub(crate) fn update(&mut self, data: &[u8]) {
-        match self {
-            HashComputer::Blake3(hasher) => {
-                hasher.update(data);
-            }
-            HashComputer::Sha256(hasher) => hasher.update(data),
-            HashComputer::Sha384(hasher) => hasher.update(data),
-            HashComputer::Sha512(hasher) => hasher.update(data),
-        }
-    }
-    pub(crate) fn finalize(&mut self) -> Vec<u8> {
-        match self {
-            HashComputer::Blake3(hasher) => hasher.finalize().as_bytes().to_vec(),
-            HashComputer::Sha256(hasher) => std::mem::take(hasher).finalize().to_vec(),
-            HashComputer::Sha384(hasher) => std::mem::take(hasher).finalize().to_vec(),
-            HashComputer::Sha512(hasher) => std::mem::take(hasher).finalize().to_vec(),
-        }
-    }
+#[derive(Clone, serde::Serialize, serde::Deserialize, Default)]
+pub struct ChunkDescriptor {
+    id: String,
+    checksum: Vec<u8>,
+    offset: u64,
+    length: u64
 }
 
 #[derive(Clone, serde::Serialize, serde::Deserialize, Default)]
@@ -73,8 +23,29 @@ pub struct Manifest {
     mfp: Vec<u8>,
     /// Checksum algorithm to use for computing chunk checksums
     checksum_algorithm: ChecksumAlgorithm,
-    /// Chunks dictionary, the key is the 0 based index of the chunk
-    chunks: BTreeMap<u64, (String, Vec<u8>)>,
+    /// Chunks information
+    chunks: Vec<ChunkDescriptor>,
+}
+
+impl ChunkDescriptor {
+    pub fn new(id: String, checksum: Vec<u8>, offset: u64, length: u64) -> Self {
+        Self {id, checksum, offset, length}
+    }
+    pub fn id(&self) -> &String {
+        &self.id
+    }
+    pub fn set_id(&mut self, chunk_id: String) {
+        self.id = chunk_id;
+    }
+    pub fn checksum(&self) -> &Vec<u8> {
+        &self.checksum
+    }
+    pub fn offset(&self) -> u64 {
+        self.offset
+    }
+    pub fn length(&self) -> u64 {
+        self.length
+    }
 }
 
 impl Manifest {
@@ -98,7 +69,7 @@ impl Manifest {
             file_size: file_size,
             mfp: random::get_rand_bytes(Manifest::MFP_LENGTH)?,
             checksum_algorithm: ChecksumAlgorithm::Blake3,
-            chunks: BTreeMap::<u64, (String, Vec<u8>)>::new(),
+            chunks: vec![],
         })
     }
 
@@ -119,11 +90,11 @@ impl Manifest {
         self.chunks.len()
     }
 
-    pub fn chunks(&self) -> &BTreeMap<u64, (String, Vec<u8>)> {
+    pub fn chunks(&self) -> &Vec<ChunkDescriptor> {
         &self.chunks
     }
 
-    pub fn chunks_mut(&mut self) -> &mut BTreeMap<u64, (String, Vec<u8>)> {
+    pub fn chunks_mut(&mut self) -> &mut Vec<ChunkDescriptor> {
         &mut self.chunks
     }
 

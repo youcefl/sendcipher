@@ -48,15 +48,34 @@ impl WasmFileDecryptor {
     }
 
     #[wasm_bindgen]
+    pub fn get_start(&self, chunk_index: u32) -> Result<u64, JsValue> {
+        let chunks = self.decryptor.get_manifest().chunks();
+        if chunk_index as usize >= chunks.len() {
+            return Err(JsValue::from_str(
+                &format!("Index {} is out of bounds", chunk_index).to_string(),
+            ));
+        }
+        Ok(chunks[chunk_index as usize].offset())
+    }
+
+    #[wasm_bindgen]
+    pub fn get_length(&self, chunk_index: u32) -> Result<u64, JsValue> {
+        let chunks = self.decryptor.get_manifest().chunks();
+        if chunk_index as usize >= chunks.len() {
+            return Err(JsValue::from_str(
+                &format!("Index {} is out of bounds", chunk_index).to_string(),
+            ));
+        }
+        Ok(chunks[chunk_index as usize].length())
+    }
+
+    #[wasm_bindgen]
     pub fn get_chunk_id(&self, chunk_index: u32) -> Result<String, JsValue> {
-        Ok(self
-            .decryptor
-            .get_manifest()
-            .chunks()
-            .get(&(chunk_index as u64))
-            .ok_or_else(|| JsValue::from_str("Invalid chunk index"))?
-            .0
-            .clone())
+        let chunks = self.decryptor.get_manifest().chunks();
+        if chunk_index as usize >= chunks.len() {
+            return Err(JsValue::from_str("Invalid chunk index"));
+        }
+        Ok(chunks[chunk_index as usize].id().clone())
     }
 
     #[wasm_bindgen]
@@ -88,8 +107,7 @@ impl WasmFileDecryptor {
         let mut all_checksums = Vec::with_capacity(self.checksum_length() as usize * chunks.len());
         chunks
             .iter()
-            .map(|e| e.1)
-            .for_each(|id_and_checksum| all_checksums.extend(&id_and_checksum.1));
+            .for_each(|chunk_desc| all_checksums.extend(chunk_desc.checksum()));
         all_checksums
     }
 
@@ -122,10 +140,17 @@ pub fn decrypt_chunk(
         &checksum,
     );
     if decryption_result.is_err() {
-        if matches!(&decryption_result.as_ref().err().unwrap(), &crate::error::Error::ChunkChecksumError(_)) {
+        if matches!(
+            &decryption_result.as_ref().err().unwrap(),
+            &crate::error::Error::ChunkChecksumError(_)
+        ) {
             return Err(JsValue::from_str("ERR_BAD_CHECKSUM"));
         }
-        return Err(JsValue::from_str(&decryption_result.err().unwrap().to_string()));
+        return Err(JsValue::from_str(
+            &decryption_result.err().unwrap().to_string(),
+        ));
     }
-    Ok(std::mem::take(decryption_result.ok().unwrap().get_text_mut()))
+    Ok(std::mem::take(
+        decryption_result.ok().unwrap().get_text_mut(),
+    ))
 }

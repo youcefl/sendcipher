@@ -9,6 +9,7 @@ pub mod key_wrapper;
 pub mod manifest;
 pub mod random;
 pub mod metadata;
+pub mod checksum;
 
 pub(crate) use blob_header::*;
 pub(crate) use blob::*;
@@ -17,4 +18,4 @@ pub(crate) use cypher_key::*;
 pub(crate) use key_wrapper::*;
 pub(crate) use manifest::*;
 pub(crate) use metadata::*;
-
+pub(crate) use checksum::*;
