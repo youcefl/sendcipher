@@ -3,7 +3,7 @@
 
 use crate::crypto::*;
 
-pub(crate) struct CypherChunk {
+pub struct CypherChunk {
     index: u64,
     blob: Blob,
 }
@@ -119,7 +119,7 @@ impl StreamDecryptor {
     }
 
     /// Gets the manifest associated with the file being decrypted
-    pub(crate) fn get_manifest(&self) -> &Manifest {
+    pub fn get_manifest(&self) -> &Manifest {
         &self.manifest
     }
 
@@ -194,7 +194,59 @@ mod tests {
         let mut encrypted_blobs = encryptor.encrypt_chunks(&chunks).unwrap();
         encrypted_blobs
             .iter()
-            .for_each(|blob| encryptor.register_encrypted_chunk(blob.0, &format!("id{}", blob.0)));
+            .try_for_each(|blob| encryptor.register_encrypted_chunk(blob.0, &format!("id{}", blob.0)));
+        let mut manifest_blob = encryptor.finalize().unwrap();
+        // In this test we want exactly one chunk (besides the manifest)
+        assert_eq!(encrypted_blobs.len(), 1);
+
+        let decryptor = StreamDecryptor::with_password("password", &mut manifest_blob).unwrap();
+        let manifest = decryptor.get_manifest();
+
+        // Check decrypted manifest correctness
+        assert_eq!(manifest.file_size(), 10);
+        assert_eq!(manifest.file_name(), "whatever_file_name.txt");
+        assert_eq!(decryptor.file_name(), "whatever_file_name.txt");
+        assert_eq!(manifest.chunks_count(), 1);
+        let chunks = manifest.chunks();
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].id(), &"id0".to_string());
+
+        // Decrypt and check the unique chunk
+        let (chunk_index, blob) = encrypted_blobs.first_mut().unwrap();
+        let decrypted_blob = decryptor
+            .decrypt_chunk(&mut CypherChunk::new(*chunk_index, std::mem::take(blob)))
+            .unwrap();
+
+        assert_eq!(decrypted_blob.get_text(), &file_contents);
+    }
+
+    #[test]
+    /// Basic encryption/decryption test focusing on the manifest
+    fn test_decrypt_after_parallel_encrypt() {
+        let chunk_generator = RandomChunkGenerator::with_seed(
+            20 * 1024 * 1024,
+            5 * 1024 * 1024,
+            10 * 1024 * 1024,
+            1u128,
+        );
+        let mut encryptor = StreamEncryptor::new("whatever_file_name.txt", chunk_generator, |k| {
+            Ok(AnyKeyWrapper::Argon2id(Argon2idKeyWrapper::new(
+                "password",
+                &create_argon2id_params_for_tests(),
+                k,
+            )?))
+        })
+        .expect("Encryptor creation should succeed");
+
+        let mut lcg = Lcg::new(LCG_PARAMS[0].0, LCG_PARAMS[0].1);
+        let file_contents = utils::create_file_contents(10, &mut lcg);
+        let mut chunks = Vec::new();
+        chunks.extend(encryptor.process_data(&file_contents));
+        chunks.extend(encryptor.on_end_of_data());
+        let mut encrypted_blobs = encryptor.parallel_encrypt_chunks(2, &chunks).unwrap();
+        encrypted_blobs
+            .iter()
+            .try_for_each(|blob| encryptor.register_encrypted_chunk(blob.0, &format!("id{}", blob.0)));
         let mut manifest_blob = encryptor.finalize().unwrap();
         // In this test we want exactly one chunk (besides the manifest)
         assert_eq!(encrypted_blobs.len(), 1);

@@ -5,7 +5,7 @@ use crate::crypto::blob_header::*;
 use crate::crypto::metadata::*;
 
 #[derive(Debug, Default)]
-pub(crate) struct Blob {
+pub struct Blob {
     /// Fully equipped serialized blob: header + ciphertext
     raw: Vec<u8>,
     /// Parsed header, lazily evaluated from raw
@@ -54,7 +54,7 @@ impl Blob {
     }
 }
 
-pub(crate) struct DecryptedBlob {
+pub struct DecryptedBlob {
     /// The header read from the blob
     header: Option<BlobHeader>,
     /// The metadata revealed by decrypting the ciphertext

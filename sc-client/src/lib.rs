@@ -1,11 +1,14 @@
-mod chunking;
-mod crypto;
-mod error;
+pub mod chunking;
+pub mod error;
+pub mod stream_decryptor;
+pub mod stream_encryptor;
+pub mod parallel_mapper;
+
+pub mod crypto;
 mod lcg;
 mod span;
 mod span_generator;
-mod stream_decryptor;
-mod stream_encryptor;
+
 #[cfg(feature = "wasm")]
 pub mod wasm_file_encryptor;
 #[cfg(feature = "wasm")]

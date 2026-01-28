@@ -5,7 +5,7 @@ use blake3;
 use digest::Digest;
 
 #[repr(u16)]
-#[derive(serde::Serialize, serde::Deserialize, Clone, PartialEq, Default)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, PartialEq, Default, Copy, Debug)]
 pub enum ChecksumAlgorithm {
     #[default]
     Blake3 = 1,

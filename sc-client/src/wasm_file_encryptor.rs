@@ -25,6 +25,13 @@ pub struct WasmEncryptionContext {
     checksum_algorithm: ChecksumAlgorithm,
 }
 
+// Note: the parallel encryption functions are not exported to WASM.
+//
+// Browser WASM doesn’t support real multithreading unless you go down the
+// COOP/COEP rabbit hole — which is brittle and not worth the pain.
+// Parallelism is instead handled at the JS level using Web Workers.
+
+
 #[cfg(feature = "wasm")]
 #[wasm_bindgen]
 pub struct WasmFileEncryptor {
@@ -135,9 +142,7 @@ impl WasmFileEncryptor {
         let mut result = Vec::<u32>::new();
         chunks.into_iter().for_each(|chnk| {
             let index = chnk.index() as u32;
-            if chnk.is_ready() {
-                result.push(index);
-            }
+            result.push(index);
             let span = Span::new(chnk.span().start(), chnk.span().size());
             self.unencrypted_chunks.insert(index, chnk);
             self.spans.insert(index, span);
@@ -209,43 +214,6 @@ impl WasmFileEncryptor {
         self.encryptor
             .get_registered_chunk_id(chunk_index as u64)
             .map_err(|e| JsValue::from_str(&e.to_string()))
-    }
-
-    #[wasm_bindgen]
-    pub fn encrypt_chunks(&mut self, chunk_ids: Vec<u32>) -> Result<EncryptedChunks, JsValue> {
-        self.parallel_encrypt_chunks(chunk_ids, 1)
-    }
-
-    // Not exported to WASM.
-    //
-    // Browser WASM doesn’t support real multithreading unless you go down the
-    // COOP/COEP rabbit hole — which is brittle and not worth the pain.
-    // Parallelism is instead handled at the JS level using Web Workers.
-    fn parallel_encrypt_chunks(
-        &mut self,
-        chunk_ids: Vec<u32>,
-        max_threads: u32,
-    ) -> Result<EncryptedChunks, JsValue> {
-        let chunks: Vec<Chunk> = chunk_ids
-            .iter()
-            .map(|idx| {
-                self.unencrypted_chunks.remove(idx).ok_or_else(|| {
-                    JsValue::from_str(&format!(
-                        "Invalid chunk id or missing chunk (index: {})",
-                        idx
-                    ))
-                })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let encrypted_chunks = self
-            .encryptor
-            .parallel_encrypt_chunks(&chunks, max_threads)
-            .map_err(|e| JsValue::from_str(&e.to_string()))?
-            .iter_mut()
-            .map(|x| (x.0, std::mem::take(x.1.data_mut())))
-            .collect();
-
-        Ok(EncryptedChunks { encrypted_chunks })
     }
 
     #[wasm_bindgen]

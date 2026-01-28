@@ -5,7 +5,7 @@
 */
 
 #[derive(Clone)]
-pub(crate) struct Span {
+pub struct Span {
     index: u64,
     start: u64,
     end: u64,

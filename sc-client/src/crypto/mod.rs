@@ -12,7 +12,7 @@ pub mod metadata;
 pub mod checksum;
 
 pub(crate) use blob_header::*;
-pub(crate) use blob::*;
+pub use blob::*;
 pub(crate) use crypto::*;
 pub(crate) use cypher_key::*;
 pub(crate) use key_wrapper::*;

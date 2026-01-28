@@ -6,12 +6,14 @@ use crate::crypto;
 use crate::crypto::CypherContext;
 use crate::crypto::*;
 use crate::error;
+use crate::parallel_mapper::*;
 use std::collections::BTreeMap;
+use std::sync::Arc;
 use std::sync::RwLock;
-use std::sync::{Arc, Mutex};
 use std::u64;
 
 pub struct StreamEncryptor<C: ChunkGenerator> {
+    /// Chunks generator
     chunk_generator: C,
     /// Encryption data
     encryption_context: CypherContext,
@@ -21,6 +23,9 @@ pub struct StreamEncryptor<C: ChunkGenerator> {
     chunks: Arc<RwLock<BTreeMap<u64, ChunkDescriptor>>>,
     /// Whether the encryption is finalized
     is_finalized: bool,
+    /// Parallel mapper used for parallel encryption
+    par_mapper:
+        Option<DynParallelMapper<Chunk, Result<(u64, Blob, ChunkDescriptor), crate::error::Error>>>,
 }
 
 // Crate only constructors
@@ -41,6 +46,7 @@ impl<C: ChunkGenerator> StreamEncryptor<C> {
             manifest,
             chunks: Arc::new(RwLock::new(BTreeMap::<u64, ChunkDescriptor>::new())),
             is_finalized: false,
+            par_mapper: None,
         };
         Ok(inst)
     }
@@ -96,7 +102,6 @@ impl<C: ChunkGenerator> StreamEncryptor<C> {
     /// Finalizes the encryption
     ///
     /// Must be called when the stream is exhausted to get the last remaining chunks to encrypt.
-    /// Returns the final chunks that were previously not ready.
     pub fn on_end_of_data(&mut self) -> Vec<Chunk> {
         let remaining_chunks = self.chunk_generator.signal_eos();
         // Now we know the size so we put it in the manifest...
@@ -110,95 +115,23 @@ impl<C: ChunkGenerator> StreamEncryptor<C> {
         self.manifest.checksum_algorithm()
     }
 
-    /// Returns the given chunks as encrypted data
-    ///
-    /// @pre c.is_ready() for all c in chunks
-    pub fn encrypt_chunks(&self, chunks: &Vec<Chunk>) -> Result<Vec<(u64, Blob)>, error::Error> {
-        chunks
-            .iter()
-            .map(|chunk| {
-                let data = self.encrypt_chunk(chunk)?;
-                Ok((chunk.index(), data))
-            })
-            .collect()
-    }
-
-    /// Performs parallel encryption of given chunks using up to max_threads conccurent threads
-    ///
-    /// @pre c.is_ready() for all c in chunks
-    pub fn parallel_encrypt_chunks(
-        &self,
-        chunks: &Vec<Chunk>,
-        max_threads: u32,
-    ) -> Result<Vec<(u64, Blob)>, error::Error> {
-        // Avoid unnecessary threading overhead in single-thread case or when less than 2 chunks
-        if max_threads < 2 || chunks.len() < 2 {
-            return self.encrypt_chunks(chunks);
-        }
-        let chunk_stk = Arc::new(Mutex::new((0..chunks.len()).collect::<Vec<usize>>()));
-        let results = Arc::new(Mutex::new(Vec::<(u64, Blob)>::new()));
-        let errors = Arc::new(Mutex::new(Vec::<error::Error>::new()));
-
-        std::thread::scope(|s| {
-            for _ in 0..std::cmp::min(max_threads as usize, chunks.len()) {
-                let chunk_stk = Arc::clone(&chunk_stk);
-                let results = Arc::clone(&results);
-                let errors = Arc::clone(&errors);
-                s.spawn(move || {
-                    while let Some(idx) = {
-                        let mut stk = chunk_stk.lock().unwrap();
-                        stk.pop()
-                    } {
-                        let chnk = &chunks[idx];
-                        let res = self.encrypt_chunk(chnk);
-                        if res.is_err() {
-                            errors.lock().unwrap().push(res.unwrap_err());
-                        } else {
-                            results.lock().unwrap().push((chnk.index(), res.unwrap()));
-                        }
-                    }
-                });
-            }
-        });
-
-        let errors_vec = {
-            let guard = errors.lock().unwrap();
-            guard.clone()
-        };
-        if errors_vec.len() != 0 {
-            return Err(crate::error::Error::Any(errors_vec[0].to_string()));
-        }
-
-        let results_mutex = Arc::try_unwrap(results)
-            .map_err(|_| error::Error::Any("Failed to unwrap results".to_string()))?;
-        Ok(results_mutex.into_inner().unwrap())
-    }
-
     /// Returns chunk encryption context
-    /// @pre chunk must be ready for encryption
     pub(crate) fn get_encryption_context(
         &self,
         chunk: &Chunk,
     ) -> Result<CypherContext, crate::error::Error> {
-        assert!(chunk.is_ready(), "Chunk not ready for encryption");
-
         Self::derive_chunk_encryption_context(&self.encryption_context, chunk.index())
     }
 
     /// Returns the given chunk as encrypted data
-    ///
-    /// @pre chunk.is_ready()
     pub fn encrypt_chunk(&self, chunk: &Chunk) -> Result<Blob, error::Error> {
-        assert!(chunk.is_ready(), "Chunk not ready for encryption");
-
+        //println!("StreamEncryptor::encrypt_chunk, chunk {}, data: {:?}", chunk.index(), &chunk.data()[..128.min(chunk.data().len())]);
         let (blob, checksum) = Self::do_encrypt_chunk(
             &self.get_encryption_context(chunk)?,
             chunk.data(),
             self.chunk_hash_algorithm(),
         )?;
-        // @todo: maybe pull this synchronization point up if it improves the performances
-        // of the parallel version: simply make a version of the function that returns
-        // results for consumption in parallel_encrypt_chunks
+
         let span = chunk.span();
         self.insert_chunk_descriptor(
             chunk.index(),
@@ -223,6 +156,68 @@ impl<C: ChunkGenerator> StreamEncryptor<C> {
                 Ok(())
             }
         }
+    }
+
+    /// Returns the given chunks as encrypted data
+    ///
+    /// @pre c.is_ready() for all c in chunks
+    pub fn encrypt_chunks(&self, chunks: &Vec<Chunk>) -> Result<Vec<(u64, Blob)>, error::Error> {
+        chunks
+            .iter()
+            .map(|chunk| {
+                let data = self.encrypt_chunk(chunk)?;
+                Ok((chunk.index(), data))
+            })
+            .collect()
+    }
+
+    fn update_mapper(&mut self, max_threads: u32) {
+        if self.par_mapper.is_some()
+            && self.par_mapper.as_ref().unwrap().concurrency() == max_threads
+        {
+            return;
+        }
+        let checksum_algo = self.manifest.checksum_algorithm();
+        let file_enc_ctx_clone = self.encryption_context.clone();
+        self.par_mapper = Some(DynParallelMapper::<
+            Chunk,
+            Result<(u64, Blob, ChunkDescriptor), crate::error::Error>,
+        >::new(
+            max_threads,
+            Box::new(move |chunk| {
+                let encryption_context =
+                    Self::derive_chunk_encryption_context(&file_enc_ctx_clone, chunk.index())?;
+                let (blob, checksum) =
+                    Self::do_encrypt_chunk(&encryption_context, chunk.data(), checksum_algo)?;
+                let span = chunk.span();
+                Ok((
+                    chunk.index(),
+                    blob,
+                    ChunkDescriptor::new("".to_string(), checksum, span.start(), span.size()),
+                ))
+            }),
+        ));
+    }
+
+    pub fn parallel_encrypt_chunks(
+        &mut self,
+        max_threads: u32,
+        chunks: &Vec<Chunk>,
+    ) -> Result<Vec<(u64, Blob)>, error::Error> {
+        self.update_mapper(max_threads);
+        let results = self.par_mapper.as_mut().unwrap().process_all(chunks);
+
+        let mut result = Vec::with_capacity(results.len());
+        for res in results {
+            if res.is_ok() {
+                let (chunk_index, blob, chunk_desc) = res.unwrap();
+                result.push((chunk_index, blob));
+                self.insert_chunk_descriptor(chunk_index, chunk_desc)?;
+            } else {
+                return Err(res.err().unwrap());
+            }
+        }
+        Ok(result)
     }
 
     fn update_chunk_id(&self, chunk_index: u64, chunk_id: &str) -> Result<(), error::Error> {
@@ -261,6 +256,7 @@ impl<C: ChunkGenerator> StreamEncryptor<C> {
         chunk_data: &[u8],
         checksum_algorithm: ChecksumAlgorithm,
     ) -> Result<(Blob, Vec<u8>), error::Error> {
+        //println!("StreamEncryptor::do_encrypt_chunk called on data = {:?}", &chunk_data[..128.min(chunk_data.len())]);
         let encrypted_chunk = crypto::encrypt_to_blob(chunk_data, &mut encryption_context.clone())
             .map_err(|e| error::Error::Any(e.to_string()))?;
         let mut checksum_computer = checksum_algorithm.get_checksum_computer();
@@ -269,8 +265,12 @@ impl<C: ChunkGenerator> StreamEncryptor<C> {
     }
 
     /// Associates a string id to an encrypted chunk identified by its index
-    pub fn register_encrypted_chunk(&mut self, chunk_index: u64, id: &str) {
-        self.update_chunk_id(chunk_index, id);
+    pub fn register_encrypted_chunk(
+        &self,
+        chunk_index: u64,
+        id: &str,
+    ) -> Result<(), crate::error::Error> {
+        self.update_chunk_id(chunk_index, id)
     }
 
     ///
@@ -480,6 +480,7 @@ pub(crate) mod tests {
         let mut start = std::time::Instant::now();
         let min_chunk_size = 8 * 1024 * 1024u64;
         let max_chunk_size = 24 * 1024 * 1024u64;
+        let num_threads = 8u32;
 
         let chunk_generator =
             RandomChunkGenerator::with_seed(0, min_chunk_size, max_chunk_size, 3u128);
@@ -496,7 +497,6 @@ pub(crate) mod tests {
         let mut gcl_duration = core::time::Duration::ZERO;
         let mut chunks = Vec::new();
         let gcl_value_size = std::mem::size_of::<u64>();
-        let num_threads = 8u32;
         for i in 0..256 {
             // 256 * 4MB = 1GB
             let mut k = 0;
@@ -517,10 +517,10 @@ pub(crate) mod tests {
             if chunks.len() >= num_threads as usize {
                 // Yes limit the number of chunks!! We are simulating the processing of a 1GB file!
                 let encrypted_chunks = encryptor
-                    .parallel_encrypt_chunks(&chunks, num_threads)
+                    .parallel_encrypt_chunks(num_threads, &chunks)
                     .unwrap();
                 assert_eq!(encrypted_chunks.len(), chunks.len());
-                chunks.iter().for_each(|chnk| {
+                chunks.iter().try_for_each(|chnk| {
                     encryptor.register_encrypted_chunk(chnk.index(), &chnk.index().to_string())
                 });
                 chunks.clear();
@@ -531,11 +531,9 @@ pub(crate) mod tests {
         chunks.extend(encryptor.on_end_of_data());
         chunking_duration += start.elapsed();
         start = std::time::Instant::now();
-        let encrypted_chunks = encryptor
-            .parallel_encrypt_chunks(&chunks, num_threads)
-            .unwrap();
+        let encrypted_chunks = encryptor.encrypt_chunks(&chunks).unwrap();
         assert_eq!(encrypted_chunks.len(), chunks.len());
-        chunks.iter().for_each(|chnk| {
+        chunks.iter().try_for_each(|chnk| {
             encryptor.register_encrypted_chunk(chnk.index(), &chnk.index().to_string())
         });
         chunks.clear();
