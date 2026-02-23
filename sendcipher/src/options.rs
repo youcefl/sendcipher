@@ -56,6 +56,10 @@ pub(crate) struct UploadOptions {
     #[arg(short, long, required = true, value_name = "URL")]
     pub server: String,
 
+    /// Path to a file containing the user token
+    #[arg(long)]
+    pub token_file: Option<PathBuf>,
+
     /// Path to a PGP public key used to encrypt the manifest and metadata.
     ///
     /// If omitted, no PGP encryption is applied.  
@@ -77,6 +81,10 @@ pub(crate) struct UploadOptions {
 impl UploadConfiguration for UploadOptions {
     fn server(&self) -> &String {
         &self.server
+    }
+
+    fn token_file(&self) -> &Option<PathBuf> {
+        &self.token_file
     }
 
     fn threads(&self) -> u32 {

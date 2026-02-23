@@ -6,6 +6,8 @@ use std::path::PathBuf;
 pub(crate) trait UploadConfiguration {
     /// URL of the server
     fn server(&self) -> &String;
+    /// Token file
+    fn token_file(&self) -> &Option<PathBuf>;
     /// Maximum number of concurrent threads to use for file upload
     fn threads(&self) -> u32;
     /// Optional path of the PGP public key file

@@ -1,7 +1,7 @@
 /* Created on 2025.12.03 */
 /* Copyright Youcef Lemsafer, all rights reserved */
 
-use ureq::{RequestBuilder, http::StatusCode};
+use ureq::http::StatusCode;
 
 use crate::error::Error;
 use core::time;
@@ -41,7 +41,7 @@ impl Server {
         Ok(())
     }
 
-    pub fn upload(&self, bytes: &[u8]) -> Result<String, Error> {
+    pub fn upload(&self, token: &str, bytes: &[u8]) -> Result<String, Error> {
         let mut upload_url = self.url.clone();
         upload_url.push_str("/api/upload");
 
@@ -49,6 +49,7 @@ impl Server {
             .method("POST")
             .uri(upload_url)
             .header("Content-Type", "application/octet-stream")
+            .header("Authorization", format!("Bearer {}", token))
             .body(bytes)
             .map_err(|e| Error::ServerError(e.to_string()))?;
 

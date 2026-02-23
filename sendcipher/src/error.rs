@@ -6,7 +6,8 @@ pub(crate) enum Error {
     Lib(sc_client::error::Error),
     Io(String),
     InvalidCommandLine(String),
-    ServerError(String)
+    ServerError(String),
+    EnvError(String)
 }
 
 impl From<std::io::Error> for Error {
