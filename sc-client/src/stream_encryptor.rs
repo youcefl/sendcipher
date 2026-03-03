@@ -360,6 +360,16 @@ impl<C: ChunkGenerator> StreamEncryptor<C> {
         }
         return self.chunks.read().unwrap().len() as u64;
     }
+
+    /// Returns the chunk ids
+    /// @pre All chunks have been registered and finalize() has been called
+    pub fn get_chunk_ids(&self) -> Vec<String> {
+        self.manifest
+            .chunks()
+            .iter()
+            .map(|c| c.id().clone())
+            .collect()
+    }
 }
 
 #[cfg(test)]

@@ -7,7 +7,9 @@ pub(crate) enum Error {
     Io(String),
     InvalidCommandLine(String),
     ServerError(String),
-    EnvError(String)
+    EnvError(String),
+    MissingUploadSessionId(String),
+    SerdeError(String)
 }
 
 impl From<std::io::Error> for Error {
@@ -19,6 +21,12 @@ impl From<std::io::Error> for Error {
 impl From<sc_client::error::Error> for Error {
     fn from(value: sc_client::error::Error) -> Self {
         Self::Lib(value)
+    }
+}
+
+impl From<serde_json::Error> for Error {
+    fn from(value: serde_json::Error) -> Self {
+        Self::SerdeError(value.to_string())
     }
 }
 

@@ -41,6 +41,7 @@ pub(crate) struct Uploader {
             Chunk,
             Server,
             String,
+            String,
             Arc<Progress<u64>>,
         ),
         Result<(), Error>,
@@ -66,22 +67,25 @@ impl Uploader {
                     Chunk,
                     Server,
                     String,
+                    String,
                     Arc<Progress<u64>>,
                 ),
                 Result<(), Error>,
             >::new(
                 upload_configuration.threads(),
-                Box::new(|(encryptor, chunk, server, token, progress)| {
-                    let blob = encryptor.read().unwrap().encrypt_chunk(&chunk)?;
-                    let chunk_index = chunk.index();
-                    let chunk_id = server.upload(&token, blob.data())?;
-                    encryptor
-                        .read()
-                        .unwrap()
-                        .register_encrypted_chunk(chunk_index, &chunk_id)?;
-                    progress.add(chunk.span().size());
-                    Ok(())
-                }),
+                Box::new(
+                    |(encryptor, chunk, server, token, upload_session_id, progress)| {
+                        let blob = encryptor.read().unwrap().encrypt_chunk(&chunk)?;
+                        let chunk_index = chunk.index();
+                        let chunk_id = server.upload(&token, &upload_session_id, blob.data())?;
+                        encryptor
+                            .read()
+                            .unwrap()
+                            .register_encrypted_chunk(chunk_index, &chunk_id)?;
+                        progress.add(chunk.span().size());
+                        Ok(())
+                    },
+                ),
             ),
         })
     }
@@ -122,12 +126,13 @@ impl Uploader {
 
         self.init_server()?;
         let server = self.server.as_ref().unwrap().clone();
+        let token = self.token.clone();
+        let upload_session_id = server.start_upload(&token, file_size)?;
         println!("Encrypting file {}", user_file.as_path().to_str().unwrap());
         let start = std::time::Instant::now();
         let encryptor = Arc::new(std::sync::RwLock::new(self.make_encryptor(&user_file)?));
 
         let progress = Self::create_progress(file_size);
-        let token = self.token.clone();
 
         let buff_size = 8 * 1024 * 1024usize;
         let mut buff = vec![0u8; buff_size];
@@ -135,23 +140,49 @@ impl Uploader {
         let mut read_bytes = file.read(&mut buff)?;
         while read_bytes != 0 {
             let chunks = encryptor.write().unwrap().process_data(&buff[..read_bytes]);
-            self.process_chunks(chunks, &server, &token, &encryptor, &progress)?;
+            self.process_chunks(
+                chunks,
+                &server,
+                &token,
+                &upload_session_id,
+                &encryptor,
+                &progress,
+            )?;
             read_bytes = file.read(&mut buff)?;
         }
         let chunks = encryptor.write().unwrap().on_end_of_data();
-        self.process_chunks(chunks, &server, &token, &encryptor, &progress)?;
+        self.process_chunks(
+            chunks,
+            &server,
+            &token,
+            &upload_session_id,
+            &encryptor,
+            &progress,
+        )?;
         self.chunk_processor.wait();
         progress.end();
         println!("");
         let manifest = encryptor.write().unwrap().finalize()?;
-        let shareable_id = server.upload(&self.token, manifest.data())?;
+        let shareable_id = server.upload(&self.token, &upload_session_id, manifest.data())?;
         let file_size = file.stream_position()? - position_before;
+        let expiration_date = server.commit_upload(
+            &token,
+            &upload_session_id,
+            file_size,
+            encryptor.read().unwrap().get_chunk_ids(),
+            &shareable_id,
+        )?;
         println!(
             "File {} ({} bytes) has been uploaded, share id is {}",
             user_file.as_path().clone().to_str().unwrap(),
             file_size,
             shareable_id
         );
+        println!(
+            "Share link: https://sendcipher.com/d/{}", shareable_id
+        );
+        
+        println!("The file will expire on: {}", expiration_date.with_timezone(&chrono::Local));
         let elapsed_secs = start.elapsed().as_secs_f64();
         println!(
             "Took {:.2}s ({:.2} bytes/s)",
@@ -178,6 +209,7 @@ impl Uploader {
         chunks: Vec<Chunk>,
         server: &Server,
         token: &String,
+        upload_session_id: &String,
         encryptor: &Arc<RwLock<StreamEncryptor<RandomChunkGenerator>>>,
         progress: &Arc<Progress<u64>>,
     ) -> Result<(), Error> {
@@ -187,6 +219,7 @@ impl Uploader {
                 chunk.clone(),
                 server.clone(),
                 token.clone(),
+                upload_session_id.clone(),
                 progress.clone(),
             ));
             for r in self.chunk_processor.pop_all() {
