@@ -239,13 +239,8 @@ fn get_padding_size(data_len: usize) -> usize {
     use rand::Rng;
     let mut rng = rand::thread_rng();
 
-    // Random padding, size 0-64KB (or 0-256KB for larger files)
-    let max_padding = if data_len < 10 * 1024 * 1024 {
-        65536
-    } else {
-        262144
-    };
-    rng.gen_range(0..=max_padding) as usize
+    const MAX_PADDING: i32 = 8192;
+    rng.gen_range(0..=MAX_PADDING) as usize
 }
 
 fn append_random_padding(buffer: &mut Vec<u8>, padding_size: usize) {
