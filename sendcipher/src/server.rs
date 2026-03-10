@@ -6,7 +6,7 @@ use ureq::http::StatusCode;
 use crate::error::Error;
 use chrono::{DateTime, Utc};
 use core::time;
-use sc_common::*;
+use sendcipher_common::*;
 use std::time::Duration;
 
 #[derive(Clone)]

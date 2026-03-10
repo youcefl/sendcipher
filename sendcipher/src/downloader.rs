@@ -7,9 +7,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, atomic::*};
 use std::time::Duration;
 
-use sc_client::crypto::manifest::ChunkDescriptor;
-use sc_client::parallel_mapper::DynParallelMapper;
-use sc_client::stream_decryptor::{CypherChunk, StreamDecryptor};
+use sendcipher_core::crypto::manifest::ChunkDescriptor;
+use sendcipher_core::parallel_mapper::DynParallelMapper;
+use sendcipher_core::stream_decryptor::{CypherChunk, StreamDecryptor};
 
 use crate::configuration::DownloadConfiguration;
 use crate::error::Error;
@@ -17,7 +17,7 @@ use crate::password::*;
 use crate::pgp::*;
 use crate::server::*;
 use crate::progress::*;
-use sc_client::crypto::blob::Blob;
+use sendcipher_core::crypto::blob::Blob;
 
 pub(crate) struct Downloader {
     /// URL of the server to connect to

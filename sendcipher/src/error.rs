@@ -3,7 +3,7 @@
 
 #[derive(Debug)]
 pub(crate) enum Error {
-    Lib(sc_client::error::Error),
+    Lib(sendcipher_core::error::Error),
     Io(String),
     InvalidCommandLine(String),
     ServerError(String),
@@ -18,8 +18,8 @@ impl From<std::io::Error> for Error {
     }
 }
 
-impl From<sc_client::error::Error> for Error {
-    fn from(value: sc_client::error::Error) -> Self {
+impl From<sendcipher_core::error::Error> for Error {
+    fn from(value: sendcipher_core::error::Error) -> Self {
         Self::Lib(value)
     }
 }
