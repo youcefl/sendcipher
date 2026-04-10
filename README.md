@@ -18,8 +18,27 @@ sendcipher upload --threads 4 --server https://sendcipher.com --password_file ~/
 ```
 
 ### To download a file
+
+Use the command line:
 ```bash
 # Download using the share ID
 sendcipher download --threads 4 --server https://sendcipher.com --password_file ~/password.txt xYZkQ8w3Nt5R9mF2
 ```
+or visit https://sendcipher.com/d/xYZkQ8w3Nt5R9mF2
+
+## Features
+- **End-to-end encrypted** - Your files are encrypted before they leave your machine
+- **Store in the cloud** - Upload once, files persist until they expire
+- **Share links** - Generate links that work anytime, even weeks later
+- **Multi-threaded transfers** - Maximize your bandwidth
+- **Expiration dates** - Set how long your files live (default 7 days)
+- **Web interface** - Download via browser without the CLI
+
+## Architecture
+- sendcipher - command line interface
+- sendcipher-core - crypto protocol and file chunking
+- [sendcipher-common](https://github.com/youcefl/sendcipher-common) - shared types (public API)
+
+## Links
+ - [Website](https://sendcipher.com)
 
