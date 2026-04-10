@@ -1,3 +1,5 @@
+/* Copyright (c) 2025-2026 Youcef Lemsafer */
+/* SPDX-License-Identifier: MIT */
 pub mod chunking;
 pub mod error;
 pub mod stream_decryptor;

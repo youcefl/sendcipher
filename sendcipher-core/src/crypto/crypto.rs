@@ -1,7 +1,6 @@
-/*
-* Created on 2025.09.29
-* Copyright Youcef Lemsafer, all rights reserved.
-*/
+/* Created on 2025.09.29 */
+/* Copyright (c) 2025-2026 Youcef Lemsafer */
+/* SPDX-License-Identifier: MIT */
 
 use aes_gcm::{
     Aes256Gcm, Nonce, Tag,

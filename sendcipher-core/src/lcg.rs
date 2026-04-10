@@ -1,5 +1,6 @@
 /* Created on 2025.11.11 */
-/* Copyright Youcef Lemsafer, all rights reserved */
+/* Copyright (c) 2025-2026 Youcef Lemsafer */
+/* SPDX-License-Identifier: MIT */
 
 #[cfg(test)]
 /// Predefined LCGs

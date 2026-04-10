@@ -1,5 +1,6 @@
 /* Created on 2025.12.03 */
-/* Copyright Youcef Lemsafer, all rights reserved */
+/* Copyright (c) 2025-2026 Youcef Lemsafer */
+/* SPDX-License-Identifier: MIT */
 
 use ureq::http::StatusCode;
 

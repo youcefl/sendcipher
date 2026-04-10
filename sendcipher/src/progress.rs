@@ -1,5 +1,6 @@
 /* Created on 2026.01.25 */
-/* Copyright Youcef Lemsafer, all rights reserved */
+/* Copyright (c) 2025-2026 Youcef Lemsafer */
+/* SPDX-License-Identifier: MIT */
 
 use std::ops::Mul;
 use std::sync::{Arc, Mutex, atomic::*};

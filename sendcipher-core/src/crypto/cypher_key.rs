@@ -1,5 +1,6 @@
 /* Created on 2025.10.18 */
-/* Copyright Youcef Lemsafer, all rights reserved. */
+/* Copyright (c) 2025-2026 Youcef Lemsafer */
+/* SPDX-License-Identifier: MIT */
 
 use crate::crypto::Argon2idParams;
 use crate::crypto::random::*;
@@ -13,7 +14,6 @@ impl From<argon2::Error> for crate::error::Error {
         crate::error::Error::Any(argon2_error.to_string())
     }
 }
-
 
 #[derive(Clone, Serialize, Deserialize)]
 pub(crate) struct CypherKey {

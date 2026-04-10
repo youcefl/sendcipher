@@ -1,7 +1,6 @@
-/*
-* Created on 2025.10.13
-* Copyright Youcef Lemsafer, all rights reserved.
-*/
+/* Created on 2025.10.13 */
+/* Copyright (c) 2025-2026 Youcef Lemsafer */
+/* SPDX-License-Identifier: MIT */
 
 #[derive(Clone, Debug, thiserror::Error)]
 pub enum Error {

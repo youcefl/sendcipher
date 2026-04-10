@@ -1,8 +1,6 @@
-/*
-* Created on 2025.10.16
-* Author: Youcef Lemsafer
-* Copyright Youcef Lemsafer, all rights reserved.
-*/
+/* Created on 2025.10.16 */
+/* Copyright (c) 2025-2026 Youcef Lemsafer */
+/* SPDX-License-Identifier: MIT */
 
 #[derive(Clone)]
 pub struct Span {

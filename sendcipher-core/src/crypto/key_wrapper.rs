@@ -1,10 +1,12 @@
 /* Created on 2025.11.06 */
-/* Copyright Youcef Lemsafer, all rights reserved. */
+/* Copyright (c) 2025-2026 Youcef Lemsafer */
+/* SPDX-License-Identifier: MIT */
 
 use serde::{Deserialize, Serialize};
 
 use crate::crypto::{
-    Aes256GcmParams, Argon2IdKeyProducer, Argon2idParams, KeyEnvelope, KeyEnvelopeType, blob_header::KdfAlgorithm, crypto, decrypt_in_place
+    Aes256GcmParams, Argon2IdKeyProducer, Argon2idParams, KeyEnvelope, KeyEnvelopeType,
+    blob_header::KdfAlgorithm, crypto, decrypt_in_place,
 };
 
 pub trait KeyWrapper: Send {
@@ -94,10 +96,13 @@ impl KdfBasedKeyWrapper for Argon2idKeyWrapper {
 
     fn unwrap_key(&self, password: &str) -> Result<Vec<u8>, crate::error::Error> {
         let mut dek = self.wrapped_key.clone();
-        let kek = Argon2IdKeyProducer::new(password, &self.parameters).get_key().clone();
+        let kek = Argon2IdKeyProducer::new(password, &self.parameters)
+            .get_key()
+            .clone();
         decrypt_in_place(
             &mut dek,
-            &<[u8;32]>::try_from(kek).map_err(|e| crate::error::Error::DecryptionError("".to_string()))?,
+            &<[u8; 32]>::try_from(kek)
+                .map_err(|e| crate::error::Error::DecryptionError("".to_string()))?,
             &Aes256GcmParams {
                 nonce: vec![0u8; 12],
             },
@@ -105,9 +110,10 @@ impl KdfBasedKeyWrapper for Argon2idKeyWrapper {
         )?;
         Ok(dek)
     }
-    
+
     fn impl_to_bytes(&self) -> Result<Vec<u8>, crate::error::Error> {
-        Ok(bincode::serialize(self).map_err(|e| crate::error::Error::SerializationError(e.to_string()))?)
+        Ok(bincode::serialize(self)
+            .map_err(|e| crate::error::Error::SerializationError(e.to_string()))?)
     }
 }
 
@@ -115,7 +121,7 @@ impl KeyWrapper for Argon2idKeyWrapper {
     fn envelope_type(&self) -> KeyEnvelopeType {
         KeyEnvelopeType::Kdf
     }
-    
+
     fn to_bytes(&self) -> Result<Vec<u8>, crate::error::Error> {
         self.kdf_wrapper_to_bytes()
     }
@@ -200,26 +206,25 @@ impl AgeKeyWrapper {
     }
 }
 
-pub(crate) fn from_key_envelope(key_envelope: &KeyEnvelope) -> Result<AnyKeyWrapper, crate::error::Error> {
+pub(crate) fn from_key_envelope(
+    key_envelope: &KeyEnvelope,
+) -> Result<AnyKeyWrapper, crate::error::Error> {
     match key_envelope.envelope_type {
         KeyEnvelopeType::Invalid => Err(crate::error::Error::DeserializationError(
             "Invalid key envelop type tag".to_string(),
         )),
         KeyEnvelopeType::Kdf => {
             let data = key_envelope.envelope_data();
-            let (kdf_algo, pos_after_kdf_algo) =
-                KdfAlgorithm::from_bytes(data)?;
+            let (kdf_algo, pos_after_kdf_algo) = KdfAlgorithm::from_bytes(data)?;
             match kdf_algo {
                 KdfAlgorithm::Invalid => {
                     return Err(crate::error::Error::DeserializationError(
                         "Invalid KDF algorithm tag".to_string(),
                     ));
                 }
-                KdfAlgorithm::Argon2id => {
-                    Ok(AnyKeyWrapper::Argon2id(Argon2idKeyWrapper::from_bytes(
-                        &data[pos_after_kdf_algo..],
-                    )?))
-                }
+                KdfAlgorithm::Argon2id => Ok(AnyKeyWrapper::Argon2id(
+                    Argon2idKeyWrapper::from_bytes(&data[pos_after_kdf_algo..])?,
+                )),
             }
         }
         KeyEnvelopeType::Pgp => Ok(AnyKeyWrapper::Pgp(PgpKeyWrapper::from_bytes(

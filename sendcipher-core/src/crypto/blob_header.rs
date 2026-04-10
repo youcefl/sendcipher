@@ -1,5 +1,6 @@
 /* Created on 2025.09.29 */
-/* Copyright Youcef Lemsafer, all rights reserved. */
+/* Copyright (c) 2025-2026 Youcef Lemsafer */
+/* SPDX-License-Identifier: MIT */
 
 use byteorder::{LittleEndian, ReadBytesExt};
 use serde::{Deserialize, Serialize};

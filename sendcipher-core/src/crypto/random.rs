@@ -1,5 +1,6 @@
 /* Created on 2025.10.19 */
-/* Copyright Youcef Lemsafer, all rights reserved */
+/* Copyright (c) 2025-2026 Youcef Lemsafer */
+/* SPDX-License-Identifier: MIT */
 
 use rand::RngCore;
 use crate::error::Error;

@@ -1,5 +1,6 @@
 /* Created on 2025.11.28 */
-/* Copyright Youcef Lemsafer, all rights reserved. */
+/* Copyright (c) 2025-2026 Youcef Lemsafer */
+/* SPDX-License-Identifier: MIT */
 /// @file metadata.rs
 /// Defines the metadata to be written encrypted in the blobs
 use serde::{Deserialize, Serialize};

@@ -1,3 +1,6 @@
+# Copyright (c) 2025-2026 Youcef Lemsafer
+# SPDX-License-Identifier: MIT
+
 [package]
 name = "sendcipher"
 version = "0.1.0"

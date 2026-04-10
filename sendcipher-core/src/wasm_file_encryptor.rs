@@ -1,5 +1,6 @@
 /* Created 2025.10.14 */
-/* Copyright Youcef Lemsafer, all rights reserved */
+/* Copyright (c) 2025-2026 Youcef Lemsafer */
+/* SPDX-License-Identifier: MIT */
 
 use crate::chunking::*;
 use crate::crypto::crypto;

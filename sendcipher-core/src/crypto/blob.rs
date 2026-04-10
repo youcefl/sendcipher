@@ -1,5 +1,6 @@
 /* Created on 2025.11.05 */
-/* Copyright Youcef Lemsafer, all rights reserved */
+/* Copyright (c) 2025-2026 Youcef Lemsafer */
+/* SPDX-License-Identifier: MIT */
 
 use crate::crypto::blob_header::*;
 use crate::crypto::metadata::*;
