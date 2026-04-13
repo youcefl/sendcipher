@@ -10,7 +10,7 @@ edition = "2024"
 clap = { version = "4.5.53", features = ["derive", "env", "cargo"] }
 http = "1.4.0"
 sendcipher-core = { version = "0.1.0", path = "../sendcipher-core" }
-sendcipher-common = { version = "0.1.0", path = "../../sendcipher-common/sendcipher-common" }
+sendcipher-common = { git = "https://github.com/youcefl/sendcipher-common.git", tag = "v0.1.0" }
 serde = "1.0.228"
 serde_json = "1.0.147"
 ureq = "3.1.4"
