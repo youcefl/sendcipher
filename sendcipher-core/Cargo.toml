@@ -4,8 +4,9 @@
 
  [package]
 name = "sendcipher-core"
-version = "0.1.1"
-edition = "2024"
+version = "0.1.2"
+edition = "2021"
+rust-version = "1.85"
 description = "Core library for encrypted file sharing at sendcipher.com"
 license = "MIT"
 repository = "https://github.com/youcefl/sendcipher"
