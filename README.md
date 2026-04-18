@@ -1,3 +1,5 @@
+![MSRV](https://img.shields.io/badge/rustc-1.85+-blue.svg)
+
 # SendCipher
 
 **End-to-end encrypted file sharing from the command line.**
@@ -5,6 +7,12 @@
 Store files in the cloud, generate share links, and download on demand. Your files are encrypted before they ever leave your machine. The server sees only encrypted blobs.
 
 ## Quick Start
+
+### Installation
+```bash
+# (Rust 1.85+ required, `rustup update` if needed)
+cargo install sendcipher
+```
 
 ### To upload a file
 ```bash
