@@ -13,7 +13,7 @@ pub(crate) trait UploadConfiguration {
     fn threads(&self) -> u32;
     /// Optional path of the PGP public key file
     fn pgp_public_key_path(&self) -> &Option<PathBuf>;
-    /// Optional password to use for file encryption
+    /// Optional: file containing the password to use for file encryption
     fn password_file(&self) -> &Option<PathBuf>;
 }
 

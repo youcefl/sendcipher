@@ -60,7 +60,9 @@ impl Uploader {
             token: Self::get_token(upload_configuration.token_file())?,
             threads: upload_configuration.threads(),
             pgp_public_key: read_pgp_public_key(&upload_configuration.pgp_public_key_path())?,
-            password: read_password_file(&upload_configuration.password_file())?,
+            password: Some(get_or_define_password(to_password_source(
+                upload_configuration.password_file(),
+            ))?),
             server: None,
             chunk_processor: DynParallelMapper::<
                 (
@@ -179,11 +181,12 @@ impl Uploader {
             file_size,
             shareable_id
         );
+        println!("Share link: https://sendcipher.com/d/{}", shareable_id);
+
         println!(
-            "Share link: https://sendcipher.com/d/{}", shareable_id
+            "The file will expire on: {}",
+            expiration_date.with_timezone(&chrono::Local)
         );
-        
-        println!("The file will expire on: {}", expiration_date.with_timezone(&chrono::Local));
         let elapsed_secs = start.elapsed().as_secs_f64();
         println!(
             "Took {:.2}s ({:.2} bytes/s)",

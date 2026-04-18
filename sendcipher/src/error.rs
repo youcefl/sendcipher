@@ -10,7 +10,8 @@ pub(crate) enum Error {
     ServerError(String),
     EnvError(String),
     MissingUploadSessionId(String),
-    SerdeError(String)
+    SerdeError(String),
+    NonMatchingPasswords(String)
 }
 
 impl From<std::io::Error> for Error {

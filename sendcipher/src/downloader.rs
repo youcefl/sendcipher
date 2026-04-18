@@ -5,7 +5,7 @@
 use std::fs::File;
 use std::io::{Seek, Write};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, atomic::*};
+use std::sync::{atomic::*, Arc, Mutex};
 use std::time::Duration;
 
 use sendcipher_core::crypto::manifest::ChunkDescriptor;
@@ -16,8 +16,8 @@ use crate::configuration::DownloadConfiguration;
 use crate::error::Error;
 use crate::password::*;
 use crate::pgp::*;
-use crate::server::*;
 use crate::progress::*;
+use crate::server::*;
 use sendcipher_core::crypto::blob::Blob;
 
 pub(crate) struct Downloader {
@@ -28,7 +28,7 @@ pub(crate) struct Downloader {
     /// Server to download files from (lazily initialized)
     server: Option<Server>,
     pgp_private_key: Option<Vec<u8>>,
-    password: Option<String>,
+    password: Option<String>, // Optional because not needed when using PGP (which is not supported yet!)
     output_dir: PathBuf,
     par_mapper: DynParallelMapper<
         (
@@ -37,7 +37,7 @@ pub(crate) struct Downloader {
             Arc<StreamDecryptor>,
             u64,
             ChunkDescriptor,
-            Arc<Progress<u64>>
+            Arc<Progress<u64>>,
         ),
         Result<(), Error>,
     >,
@@ -54,7 +54,9 @@ impl Downloader {
             threads: threads,
             server: None,
             pgp_private_key: read_pgp_private_key(&download_configuration.pgp_private_key_path())?,
-            password: read_password_file(&download_configuration.password_file())?,
+            password: Some(get_password(to_password_source(
+                download_configuration.password_file(),
+            ))?),
             output_dir: download_configuration.output_dir().clone(),
             par_mapper: Self::create_par_mapper(threads),
         })
@@ -131,7 +133,7 @@ impl Downloader {
             Box::new(|percent: f64| {
                 print!("\rDownload is {:.1}% complete", percent);
                 std::io::stdout().flush();
-            })
+            }),
         ));
         let manifest = decryptor.get_manifest();
         let mut chunk_index = 0u64;
@@ -142,7 +144,7 @@ impl Downloader {
                 decryptor.clone(),
                 chunk_index,
                 chunk_desc.clone(),
-                progress.clone()
+                progress.clone(),
             ));
             chunk_index += 1;
         });
@@ -162,14 +164,16 @@ impl Downloader {
         Ok(())
     }
 
-    fn create_par_mapper(threads: u32) -> DynParallelMapper<
+    fn create_par_mapper(
+        threads: u32,
+    ) -> DynParallelMapper<
         (
             Arc<Mutex<File>>,
             Server,
             Arc<StreamDecryptor>,
             u64,
             ChunkDescriptor,
-            Arc<Progress<u64>>
+            Arc<Progress<u64>>,
         ),
         Result<(), Error>,
     > {
@@ -180,23 +184,25 @@ impl Downloader {
                 Arc<StreamDecryptor>,
                 u64,
                 ChunkDescriptor,
-                Arc<Progress<u64>>
+                Arc<Progress<u64>>,
             ),
             Result<(), Error>,
         >::new(
             threads,
-            Box::new(|(file, server, decryptor, chunk_index, chunk_desc, progress)| {
-                let chunk = Self::download_blob(&server, chunk_desc.id())?;
-                let decrypted =
-                    decryptor.decrypt_chunk(&mut CypherChunk::new(chunk_index, chunk))?;
-                {
-                    let mut file_lock = file.lock().unwrap();
-                    file_lock.seek(std::io::SeekFrom::Start(chunk_desc.offset()))?;
-                    file_lock.write(&decrypted.get_text())?;
-                }
-                progress.add(chunk_desc.length());
-                Ok(())
-            }),
+            Box::new(
+                |(file, server, decryptor, chunk_index, chunk_desc, progress)| {
+                    let chunk = Self::download_blob(&server, chunk_desc.id())?;
+                    let decrypted =
+                        decryptor.decrypt_chunk(&mut CypherChunk::new(chunk_index, chunk))?;
+                    {
+                        let mut file_lock = file.lock().unwrap();
+                        file_lock.seek(std::io::SeekFrom::Start(chunk_desc.offset()))?;
+                        file_lock.write(&decrypted.get_text())?;
+                    }
+                    progress.add(chunk_desc.length());
+                    Ok(())
+                },
+            ),
         )
     }
 

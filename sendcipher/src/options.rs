@@ -51,10 +51,10 @@ pub(crate) struct UploadOptions {
     ///
     /// Examples:
     ///   --server http://localhost:19431
-    ///   --server https://example.com
+    ///   --server https://sendcipher.com
     ///
-    /// This argument is required.
-    #[arg(short, long, required = true, value_name = "URL")]
+    /// This argument is not required. The default value is https://sendcipher.com
+    #[arg(short, long, value_name = "URL", default_value = "https://sendcipher.com")]
     pub server: String,
 
     /// Path to a file containing the user token
@@ -66,11 +66,11 @@ pub(crate) struct UploadOptions {
     /// If omitted, no PGP encryption is applied.  
     /// Use this when sending encrypted data to a recipient who holds
     /// the corresponding private key.
-    #[arg(long = "pgp_pub")]
+    #[arg(long = "pgp-pub")]
     pub pgp_public_key: Option<PathBuf>,
 
     /// File containing the password for symmetric encryption
-    #[arg(long = "password_file")]
+    #[arg(long = "password-file")]
     pub password_file: Option<PathBuf>,
 
     /// Input file to upload.
@@ -103,11 +103,6 @@ impl UploadConfiguration for UploadOptions {
 
 impl UploadOptions {
     pub fn validate(&self) -> Result<(), crate::error::Error> {
-        if self.pgp_public_key.is_none() && self.password_file.is_none() {
-            return Err(crate::error::Error::InvalidCommandLine(
-                "At least one of password file or PGP key must be provided".to_string()
-            ));
-        }
         Ok(())
     }
 }
@@ -115,11 +110,6 @@ impl UploadOptions {
 /// Download and decrypt a file from a SendCipher server
 /// using the file ID returned during upload.
 #[derive(Clone, clap::Args)]
-#[command(group(
-    clap::ArgGroup::new("decrypt_method")
-        .required(true)
-        .args(["password_file", "pgp_private_key"])
-))]
 pub struct DownloadOptions {
     /// Number of threads used for parallel chunk fetching and decryption.
     ///
@@ -128,25 +118,25 @@ pub struct DownloadOptions {
     #[arg(long, default_value_t = 4)]
     pub threads: usize,
 
-    /// Base URL of the Sendcipher server.
+    /// Base URL of the SendCipher server.
     ///
-    /// Required. Example:
+    /// Example:
     ///   --server http://localhost:19431
-    #[arg(long)]
+    #[arg(short, long, value_name = "URL", default_value = "https://sendcipher.com")]
     pub server: String,
 
     /// Path to a PGP private key used to decrypt the manifest.
     ///
     /// Necessary only if the upload was performed with --pgp_pub.
     /// If the wrong key is provided, decryption will fail immediately.
-    #[arg(long = "pgp_priv")]
+    #[arg(long = "pgp-priv")]
     pub pgp_private_key: Option<PathBuf>,
 
     /// File containing the password for symmetric encryption
-    #[arg(long = "password_file")]
+    #[arg(long = "password-file")]
     pub password_file: Option<PathBuf>,
 
-    #[arg(long = "output_dir")]
+    #[arg(long = "output-dir")]
     pub output_dir: PathBuf,
 
     /// File ID returned during upload.
@@ -179,11 +169,6 @@ impl DownloadConfiguration for DownloadOptions {
 
 impl DownloadOptions {
     pub fn validate(&self) -> Result<(), crate::error::Error> {
-        if self.pgp_private_key.is_none() && self.password_file.is_none() {
-            return Err(crate::error::Error::InvalidCommandLine(
-                "At least one of password file or PGP key must be provided".to_string()
-            ));
-        }
         Ok(())
     }
 }
