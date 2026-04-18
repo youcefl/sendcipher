@@ -21,7 +21,7 @@ cargo install sendcipher
 export SENDCIPHER_TOKEN="your-token-here"
 
 # Upload a file
-sendcipher upload --threads 4 --server https://sendcipher.com --password_file ~/password.txt confidential.pdf
+sendcipher upload --threads 4 confidential.pdf
 
 ```
 
@@ -30,9 +30,9 @@ sendcipher upload --threads 4 --server https://sendcipher.com --password_file ~/
 Use the command line:
 ```bash
 # Download using the share ID
-sendcipher download --threads 4 --server https://sendcipher.com --password_file ~/password.txt xYZkQ8w3Nt5R9mF2
+sendcipher download --threads 4 <Some Share Id>
 ```
-or visit https://sendcipher.com/d/xYZkQ8w3Nt5R9mF2
+or visit `https://sendcipher.com/d/<some share ID>`
 
 ## Features
 - **End-to-end encrypted** - Your files are encrypted before they leave your machine
