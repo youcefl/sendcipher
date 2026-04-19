@@ -34,6 +34,17 @@ sendcipher download --threads 4 <Some Share Id>
 ```
 or visit `https://sendcipher.com/d/<some share ID>`
 
+### Benchmark
+
+**Test environment:** Intel Core Ultra 7 155H, 64GB RAM, localhost (`http://localhost:3000`)
+
+| Operation | Time | Speed |
+|-----------|------|-------|
+| Upload (12GiB, 16 threads) | 38.11s | 338'117'585.90 bytes/s |
+| Download (12GiB, 16 threads) | 26.49s | 486'388'306.87 bytes/s |
+
+![Benchmark](assets/localhost_12GB_roundtrip_test.png)
+
 ## Features
 - **End-to-end encrypted** - Your files are encrypted before they leave your machine
 - **Store in the cloud** - Upload once, files persist until they expire
